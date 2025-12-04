@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { type HotkeyConfig, tauriAPI } from "./tauri";
+import { configAPI, type HotkeyConfig, tauriAPI } from "./tauri";
 
 export function useServerUrl() {
 	return useQuery({
@@ -65,6 +65,16 @@ export function useUpdateSoundEnabled() {
 	});
 }
 
+export function useUpdateCleanupPrompt() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: (prompt: string | null) => tauriAPI.updateCleanupPrompt(prompt),
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["settings"] });
+		},
+	});
+}
+
 // History queries and mutations
 export function useHistory(limit?: number) {
 	return useQuery({
@@ -100,5 +110,21 @@ export function useClearHistory() {
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["history"] });
 		},
+	});
+}
+
+// Config API queries and mutations (FastAPI server)
+export function useDefaultPrompt() {
+	return useQuery({
+		queryKey: ["defaultPrompt"],
+		queryFn: () => configAPI.getDefaultPrompt(),
+		staleTime: Number.POSITIVE_INFINITY, // Default prompt never changes
+		retry: false, // Don't retry if server not available
+	});
+}
+
+export function useSetServerPrompt() {
+	return useMutation({
+		mutationFn: (prompt: string | null) => configAPI.setPrompt(prompt),
 	});
 }

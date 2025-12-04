@@ -22,6 +22,7 @@ interface AppSettings {
 	hold_hotkey: HotkeyConfig;
 	selected_mic_id: string | null;
 	sound_enabled: boolean;
+	cleanup_prompt: string | null;
 }
 
 export const tauriAPI = {
@@ -71,6 +72,10 @@ export const tauriAPI = {
 		return invoke("update_sound_enabled", { enabled });
 	},
 
+	async updateCleanupPrompt(prompt: string | null): Promise<void> {
+		return invoke("update_cleanup_prompt", { prompt });
+	},
+
 	// History API
 	async addHistoryEntry(text: string): Promise<HistoryEntry> {
 		return invoke("add_history_entry", { text });
@@ -91,5 +96,43 @@ export const tauriAPI = {
 	// Overlay API
 	async resizeOverlay(width: number, height: number): Promise<void> {
 		return invoke("resize_overlay", { width, height });
+	},
+};
+
+// Config API for server-side settings (FastAPI)
+const CONFIG_API_URL = "http://127.0.0.1:8766";
+
+export interface DefaultPromptResponse {
+	prompt: string;
+}
+
+export interface CurrentPromptResponse {
+	prompt: string;
+	is_custom: boolean;
+}
+
+export interface SetPromptResponse {
+	success: boolean;
+	error?: string;
+}
+
+export const configAPI = {
+	async getDefaultPrompt(): Promise<DefaultPromptResponse> {
+		const response = await fetch(`${CONFIG_API_URL}/api/prompt/default`);
+		return response.json();
+	},
+
+	async getCurrentPrompt(): Promise<CurrentPromptResponse> {
+		const response = await fetch(`${CONFIG_API_URL}/api/prompt/current`);
+		return response.json();
+	},
+
+	async setPrompt(prompt: string | null): Promise<SetPromptResponse> {
+		const response = await fetch(`${CONFIG_API_URL}/api/prompt`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ prompt }),
+		});
+		return response.json();
 	},
 };

@@ -13,6 +13,7 @@ import asyncio
 from typing import Any
 
 import typer
+import uvicorn
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -36,6 +37,8 @@ from pipecat.transports.websocket.server import (
     WebsocketServerTransport,
 )
 
+from api.config_server import app as config_api_app
+from api.config_server import set_llm_converter
 from config.settings import Settings
 from processors.llm_cleanup import LLMResponseToRTVIConverter, TranscriptionToLLMConverter
 from processors.transcription_buffer import TranscriptionBufferProcessor
@@ -146,8 +149,11 @@ async def run_server(host: str, port: int, settings: Settings) -> None:
     # Initialize processors
     debug_input = DebugFrameProcessor(name="input")
     debug_after_stt = DebugFrameProcessor(name="after-stt")
-    transcription_buffer = TranscriptionBufferProcessor()
     transcription_to_llm = TranscriptionToLLMConverter()
+    transcription_buffer = TranscriptionBufferProcessor()
+
+    # Share converter with FastAPI config server
+    set_llm_converter(transcription_to_llm)
     llm_response_converter = LLMResponseToRTVIConverter()
     text_response = TextResponseProcessor()
 
@@ -194,16 +200,31 @@ async def run_server(host: str, port: int, settings: Settings) -> None:
     # Run the server
     runner = PipelineRunner(handle_sigint=True)
 
+    # Configure FastAPI/uvicorn server for config API
+    api_port = port + 1  # Config API runs on port 8766 if WebSocket is on 8765
+    uvicorn_config = uvicorn.Config(
+        config_api_app,
+        host=host,
+        port=api_port,
+        log_level="warning",  # Reduce noise from uvicorn
+    )
+    api_server = uvicorn.Server(uvicorn_config)
+
     logger.info("=" * 60)
     logger.success("Voice Dictation Server Ready!")
     logger.info("=" * 60)
     logger.info(f"WebSocket endpoint: ws://{host}:{port}")
+    logger.info(f"Config API endpoint: http://{host}:{api_port}")
     logger.info("Waiting for Tauri client connection...")
     logger.info("Press Ctrl+C to stop")
     logger.info("=" * 60)
 
     try:
-        await runner.run(task)
+        # Run both servers concurrently
+        await asyncio.gather(
+            runner.run(task),
+            api_server.serve(),
+        )
     except asyncio.CancelledError:
         logger.info("Server stopped")
     except Exception as e:

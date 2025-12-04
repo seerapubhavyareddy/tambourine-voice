@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	useAddHistoryEntry,
 	useServerUrl,
+	useSetServerPrompt,
 	useSettings,
 	useTypeText,
 } from "./lib/queries";
@@ -59,10 +60,12 @@ function RecordingControl() {
 	} = useRecordingStore();
 	const containerRef = useRef<HTMLDivElement>(null);
 	const { data: serverUrl } = useServerUrl();
+	const { data: settings } = useSettings();
 
 	// TanStack Query hooks
 	const typeTextMutation = useTypeText();
 	const addHistoryEntry = useAddHistoryEntry();
+	const setServerPrompt = useSetServerPrompt();
 
 	// Response timeout (10s)
 	const { start: startResponseTimeout, clear: clearResponseTimeout } =
@@ -176,6 +179,12 @@ function RecordingControl() {
 		const onConnected = () => {
 			console.log("[Pipecat] Connected to server");
 			handleConnected();
+
+			// Sync custom cleanup prompt to server via REST API
+			// This ensures the server uses the saved prompt from Tauri settings
+			const promptToSync = settings?.cleanup_prompt ?? null;
+			setServerPrompt.mutate(promptToSync);
+			console.log("[Pipecat] Synced cleanup prompt to server via REST API");
 		};
 
 		const onDisconnected = () => {
@@ -280,6 +289,7 @@ function RecordingControl() {
 	}, [
 		client,
 		serverUrl,
+		settings,
 		handleConnected,
 		handleDisconnected,
 		handleResponse,
@@ -287,6 +297,7 @@ function RecordingControl() {
 		typeTextMutation,
 		addHistoryEntry,
 		clearResponseTimeout,
+		setServerPrompt,
 	]);
 
 	// Click handler (toggle mode)
@@ -311,19 +322,33 @@ function RecordingControl() {
 				cursor: "grab",
 			}}
 		>
-			<UserAudioComponent
-				onClick={handleClick}
-				isMicEnabled={state === "recording"}
-				noDevicePicker={true}
-				noVisualizer={state !== "recording"}
-				visualizerProps={{
-					barColor: "#ffffff",
-					backgroundColor: "#000000",
-				}}
-				classNames={{
-					button: "bg-black text-white hover:bg-gray-900",
-				}}
-			/>
+			{state === "processing" ? (
+				<div
+					style={{
+						width: 48,
+						height: 48,
+						display: "flex",
+						alignItems: "center",
+						justifyContent: "center",
+					}}
+				>
+					<Loader size="sm" color="white" />
+				</div>
+			) : (
+				<UserAudioComponent
+					onClick={handleClick}
+					isMicEnabled={state === "recording"}
+					noDevicePicker={true}
+					noVisualizer={state !== "recording"}
+					visualizerProps={{
+						barColor: "#ffffff",
+						backgroundColor: "#000000",
+					}}
+					classNames={{
+						button: "bg-black text-white hover:bg-gray-900",
+					}}
+				/>
+			)}
 		</div>
 	);
 }

@@ -39,6 +39,10 @@ pub struct AppSettings {
     /// Whether sound feedback is enabled
     #[serde(default = "default_sound_enabled")]
     pub sound_enabled: bool,
+
+    /// Custom LLM cleanup prompt (None = use server default)
+    #[serde(default)]
+    pub cleanup_prompt: Option<String>,
 }
 
 fn default_toggle_hotkey() -> HotkeyConfig {
@@ -66,6 +70,7 @@ impl Default for AppSettings {
             hold_hotkey: default_hold_hotkey(),
             selected_mic_id: None,
             sound_enabled: true,
+            cleanup_prompt: None,
         }
     }
 }
@@ -181,6 +186,18 @@ impl SettingsManager {
                 .write()
                 .map_err(|e| format!("Failed to write settings: {}", e))?;
             settings.sound_enabled = enabled;
+        }
+        self.save()
+    }
+
+    /// Update the cleanup prompt setting
+    pub fn update_cleanup_prompt(&self, prompt: Option<String>) -> Result<(), String> {
+        {
+            let mut settings = self
+                .settings
+                .write()
+                .map_err(|e| format!("Failed to write settings: {}", e))?;
+            settings.cleanup_prompt = prompt;
         }
         self.save()
     }

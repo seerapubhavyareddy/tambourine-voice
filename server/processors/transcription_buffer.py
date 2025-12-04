@@ -9,6 +9,8 @@ Uses a state machine pattern with tagged unions for explicit state management:
 - WaitingForSTTState: Stop received, waiting for STT to catch up
 """
 
+from __future__ import annotations
+
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime

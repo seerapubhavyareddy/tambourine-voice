@@ -97,6 +97,21 @@ class TranscriptionToLLMConverter(FrameProcessor):
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the converter."""
         super().__init__(**kwargs)
+        self._custom_prompt: str | None = None
+
+    @property
+    def system_prompt(self) -> str:
+        """Get the active system prompt (custom or default)."""
+        return self._custom_prompt if self._custom_prompt else CLEANUP_SYSTEM_PROMPT
+
+    def set_custom_prompt(self, prompt: str | None) -> None:
+        """Update the custom prompt at runtime.
+
+        Args:
+            prompt: New custom prompt, or None to use default.
+        """
+        self._custom_prompt = prompt
+        logger.info(f"Cleanup prompt updated: {'custom' if prompt else 'default'}")
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         """Convert transcription frames to LLM context frames.
@@ -115,7 +130,7 @@ class TranscriptionToLLMConverter(FrameProcessor):
                 # Create OpenAI-compatible context with cleanup prompt
                 context = OpenAILLMContext(
                     messages=[
-                        {"role": "system", "content": CLEANUP_SYSTEM_PROMPT},
+                        {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": text},
                     ]
                 )

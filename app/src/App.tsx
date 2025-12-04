@@ -1,5 +1,7 @@
 import {
+	Accordion,
 	Alert,
+	Button,
 	Kbd,
 	Loader,
 	NavLink,
@@ -10,12 +12,15 @@ import {
 	Tooltip,
 } from "@mantine/core";
 import { AlertCircle, Home, Mic, Settings } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DeviceSelector } from "./components/DeviceSelector";
 import { HistoryFeed } from "./components/HistoryFeed";
 import { HotkeyInput } from "./components/HotkeyInput";
 import {
+	useDefaultPrompt,
+	useSetServerPrompt,
 	useSettings,
+	useUpdateCleanupPrompt,
 	useUpdateHoldHotkey,
 	useUpdateSoundEnabled,
 	useUpdateToggleHotkey,
@@ -203,9 +208,33 @@ function HomeView() {
 
 function SettingsView() {
 	const { data: settings, isLoading } = useSettings();
+	const { data: defaultPromptData, isLoading: isLoadingDefaultPrompt } =
+		useDefaultPrompt();
 	const updateSoundEnabled = useUpdateSoundEnabled();
 	const updateToggleHotkey = useUpdateToggleHotkey();
 	const updateHoldHotkey = useUpdateHoldHotkey();
+	const updateCleanupPrompt = useUpdateCleanupPrompt();
+	const setServerPrompt = useSetServerPrompt();
+
+	// Local state for the prompt textarea
+	const [promptValue, setPromptValue] = useState<string>("");
+	const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
+	// Determine if we're using a custom prompt
+	const hasCustomPrompt = Boolean(settings?.cleanup_prompt);
+
+	// Sync local state with settings or default prompt when loaded
+	useEffect(() => {
+		if (settings !== undefined) {
+			// If user has a custom prompt, show it; otherwise show default
+			if (settings.cleanup_prompt) {
+				setPromptValue(settings.cleanup_prompt);
+			} else if (defaultPromptData?.prompt) {
+				setPromptValue(defaultPromptData.prompt);
+			}
+			setHasUnsavedChanges(false);
+		}
+	}, [settings?.cleanup_prompt, defaultPromptData?.prompt, settings]);
 
 	const handleSoundToggle = (checked: boolean) => {
 		updateSoundEnabled.mutate(checked);
@@ -217,6 +246,40 @@ function SettingsView() {
 
 	const handleHoldHotkeyChange = (config: HotkeyConfig) => {
 		updateHoldHotkey.mutate(config);
+	};
+
+	const handlePromptChange = (value: string) => {
+		setPromptValue(value);
+		setHasUnsavedChanges(true);
+	};
+
+	const handleSavePrompt = () => {
+		// Determine if user is saving a custom prompt or resetting to default
+		const trimmedValue = promptValue.trim();
+		const isDefault = trimmedValue === defaultPromptData?.prompt;
+
+		// If the value equals default, save as null (use default)
+		const promptToSave = isDefault ? null : trimmedValue || null;
+
+		// Save to Tauri (persistence) and server (runtime)
+		updateCleanupPrompt.mutate(promptToSave, {
+			onSuccess: () => {
+				setServerPrompt.mutate(promptToSave);
+				setHasUnsavedChanges(false);
+			},
+		});
+	};
+
+	const handleResetPrompt = () => {
+		// Reset to default prompt value
+		setPromptValue(defaultPromptData?.prompt ?? "");
+		// Save null to both Tauri and server
+		updateCleanupPrompt.mutate(null, {
+			onSuccess: () => {
+				setServerPrompt.mutate(null);
+				setHasUnsavedChanges(false);
+			},
+		});
 	};
 
 	const defaultToggleHotkey: HotkeyConfig = {
@@ -294,6 +357,90 @@ function SettingsView() {
 				>
 					Hotkey changes require app restart to take effect.
 				</Alert>
+			</div>
+
+			<div className="settings-section animate-in animate-in-delay-3">
+				<h3 className="settings-section-title">Advanced</h3>
+				<div className="settings-card">
+					<Accordion variant="separated" radius="md">
+						<Accordion.Item value="cleanup-prompt">
+							<Accordion.Control>
+								<div>
+									<p className="settings-label">LLM Cleanup Prompt</p>
+									<p className="settings-description">
+										Customize how the AI cleans up your dictated speech
+									</p>
+								</div>
+							</Accordion.Control>
+							<Accordion.Panel>
+								{isLoadingDefaultPrompt ? (
+									<div
+										style={{
+											display: "flex",
+											justifyContent: "center",
+											padding: "20px",
+										}}
+									>
+										<Loader size="sm" color="orange" />
+									</div>
+								) : (
+									<>
+										<Textarea
+											placeholder="Loading default prompt..."
+											value={promptValue}
+											onChange={(event) =>
+												handlePromptChange(event.currentTarget.value)
+											}
+											minRows={8}
+											maxRows={20}
+											autosize
+											disabled={isLoading || isLoadingDefaultPrompt}
+											styles={{
+												input: {
+													backgroundColor: "var(--bg-elevated)",
+													borderColor: "var(--border-default)",
+													color: "var(--text-primary)",
+													fontFamily: "monospace",
+													fontSize: "13px",
+												},
+											}}
+										/>
+										<div
+											style={{
+												display: "flex",
+												gap: 12,
+												marginTop: 16,
+												justifyContent: "flex-end",
+											}}
+										>
+											<Button
+												variant="subtle"
+												color="gray"
+												onClick={handleResetPrompt}
+												disabled={isLoading || !hasCustomPrompt}
+											>
+												Reset to Default
+											</Button>
+											<Button
+												color="orange"
+												onClick={handleSavePrompt}
+												disabled={isLoading || !hasUnsavedChanges}
+												loading={updateCleanupPrompt.isPending}
+											>
+												Save Prompt
+											</Button>
+										</div>
+										<Text size="xs" c="dimmed" mt="sm">
+											{hasCustomPrompt
+												? 'Using custom prompt. Click "Reset to Default" to use the built-in prompt.'
+												: "Using default prompt. Edit above to customize."}
+										</Text>
+									</>
+								)}
+							</Accordion.Panel>
+						</Accordion.Item>
+					</Accordion>
+				</div>
 			</div>
 		</div>
 	);

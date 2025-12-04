@@ -53,3 +53,12 @@ pub async fn update_sound_enabled(
 ) -> Result<(), String> {
     settings_manager.update_sound_enabled(enabled)
 }
+
+/// Update the cleanup prompt setting
+#[tauri::command]
+pub async fn update_cleanup_prompt(
+    prompt: Option<String>,
+    settings_manager: State<'_, SettingsManager>,
+) -> Result<(), String> {
+    settings_manager.update_cleanup_prompt(prompt)
+}

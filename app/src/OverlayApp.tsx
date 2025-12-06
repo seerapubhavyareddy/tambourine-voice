@@ -132,8 +132,6 @@ function RecordingControl() {
 			startConnecting();
 
 			try {
-				// Clean up any previous connection state before retrying
-				await client.disconnect().catch(() => {});
 				await client.connect({ wsUrl: serverUrl });
 				// Connection successful - the Connected event will handle state transition
 			} catch (error) {
@@ -235,24 +233,18 @@ function RecordingControl() {
 			console.log("[Pipecat] Disconnected from server");
 			handleDisconnected();
 
-			// Attempt reconnection after delay with proper cleanup
-			const attemptReconnect = async () => {
+			// Attempt reconnection after delay
+			setTimeout(async () => {
 				const { state } = useRecordingStore.getState();
 				if (serverUrl && state === "disconnected") {
 					startConnecting();
 					try {
-						// Clean up before reconnecting
-						await client.disconnect().catch(() => {});
 						await client.connect({ wsUrl: serverUrl });
 					} catch {
 						handleDisconnected();
-						// Schedule another retry
-						setTimeout(attemptReconnect, 2000);
 					}
 				}
-			};
-
-			setTimeout(attemptReconnect, 2000);
+			}, 2000);
 		};
 
 		const onServerMessage = async (message: unknown) => {

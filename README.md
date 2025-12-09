@@ -6,13 +6,33 @@
 
 Customizable AI powered voice dictation tool. Open-source alternative to [Wispr Flow](https://wisprflow.ai) and [Superwhisper](https://superwhisper.com). Speak and your words are typed wherever your cursor is.
 
-## Why Tambourine?
+## Why?
 
-Unlike proprietary voice dictation tools, this project gives you full control:
+**You speak faster than you type.** Typing averages 40-50 wpm, but speaking averages 130-160 wpm. Tambourine lets you write at the speed you think, capturing ideas before they slip away.
 
-- **Swap AI providers** — Use any STT (Cartesia, Deepgram, AssemblyAI) or LLM (Cerebras, OpenAI, Anthropic, Google, Groq)
+**It's easier on your body.** Hours of typing can lead to wrist strain, eye fatigue, and poor posture. Voice dictation gives your hands a break and lets you work from any position—standing, walking, or leaning back in your chair.
+
+**AI handles the cleanup.** Unlike raw transcription, Tambourine uses AI to remove filler words ("um", "uh", "like"), fix grammar, and format your text properly. You speak naturally; the output reads like polished writing.
+
+**It works everywhere.** Voice dictation types directly at your cursor—emails, messages, documents, code, terminal. No copy-pasting or app switching required.
+
+**Why not native dictation?** Built-in dictation is not personalized but Tambourine can be customized to your speaking and writing style, and with a personal dictionary for uncommon terms.
+
+**Why not proprietary tools?** Unlike Wispr Flow or Superwhisper, this project gives you full control:
+
+- **Swap AI providers** — Choose your STT (Cartesia, Deepgram, AssemblyAI) or LLM (Cerebras, OpenAI, Anthropic, Google, Groq)
 - **Customize processing** — Modify prompts, add custom processors, or chain multiple LLMs
 - **Extensible** — Built on [Pipecat](https://github.com/pipecat-ai/pipecat)'s modular pipeline framework
+
+## Platform Support
+
+| Platform | Compatibility |
+| -------- | ------------- |
+| Windows  | ✅             |
+| macOS    | ✅             |
+| Linux    | ⚠️             |
+| Android  | ❌             |
+| iOS      | ❌             |
 
 ## Features
 
@@ -21,39 +41,49 @@ Unlike proprietary voice dictation tools, this project gives you full control:
   - Toggle mode: `Ctrl+Alt+Space` - Press to start, press again to stop
 - **Real-time Speech-to-Text** - Fast transcription with configurable STT providers
 - **LLM Text Cleanup** - Removes filler words, fixes grammar using configurable LLM
-- **Automatic Text Typing** - Pastes cleaned text at cursor position
+- **Customizable Prompts** - Edit cleanup rules, enable advanced features, add personal dictionary
+- **Automatic Typing** - Pastes cleaned text at cursor position
+- **Recording Overlay** - Visual indicator in bottom-right corner during dictation
 - **System Tray Integration** - Click to show/hide, right-click menu
 - **Transcription History** - View and copy previous dictations
 - **Customizable Hotkeys** - Configure shortcuts to your preference
 - **Device Selection** - Choose your preferred microphone
+- **Sound Feedback** - Audio cues for recording start/stop
+- **Auto-Mute Audio** - Automatically mute system audio while dictating (Windows/macOS)
+- **In-App Provider Selection** - Switch STT and LLM providers without restarting
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      Tauri App (app/)                       │
-│  - Global hotkeys (Ctrl+Alt+Space, Ctrl+Alt+.)             │
-│  - Rust backend with enigo/arboard for text typing         │
-│  - React frontend with Pipecat client                      │
-│  - System tray with show/hide toggle                       │
-└─────────────────────────┬───────────────────────────────────┘
-                          │ WebSocket (ws://localhost:8765)
-                          ▼
+│  - Global hotkeys (Ctrl+Alt+Space, Ctrl+Alt+.)              │
+│  - Rust backend for keyboard and audio controls             │
+│  - React frontend with Pipecat client                       │
+│  - System tray with show/hide toggle                        │
+└───────────────────┬─────────────────────┬───────────────────┘
+                    │                     │
+   WebSocket :8765  │                     │  HTTP :8766
+                    ▼                     ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                  Dictation Server (server/)                  │
-│  - Pipecat pipeline for audio processing                    │
-│  - Configurable STT (Cartesia, Deepgram, AssemblyAI)        │
-│  - Configurable LLM (Cerebras, OpenAI, Anthropic, etc.)     │
-│  - Returns cleaned text to client                           │
-└─────────────────────────────────────────────────────────────┘
+│                  Python Server (server/)                    │
+├─────────────────────────────┬───────────────────────────────┤
+│     Pipecat WebSocket       │       FastAPI Config          │
+│  - Audio processing         │  - Provider switching         │
+│  - STT (Cartesia,           │  - Prompt customization       │
+│    Deepgram, AssemblyAI)    │  - Runtime settings           │
+│  - LLM cleanup (Cerebras,   │                               │
+│    OpenAI, Anthropic, etc.) │                               │
+│  - Returns cleaned text     │                               │
+└─────────────────────────────┴───────────────────────────────┘
 ```
 
 ## Prerequisites
 
-- Rust (for Tauri)
-- Node.js 18+
+- Rust
+- Node.js
 - pnpm
-- Python 3.13+
+- Python
 - uv (Python package manager)
 
 ### Linux Dependencies
@@ -67,20 +97,18 @@ sudo apt-get install libwebkit2gtk-4.1-dev build-essential curl wget file \
 
 ### 1. Get API Keys
 
-Sign up and get API keys from:
-- **Cartesia**: https://cartesia.ai (STT)
-- **Cerebras**: https://cloud.cerebras.ai (LLM - free tier: 1M tokens/day)
+Sign up and get API keys for the providers you want to use. Some providers with generous free tiers as of this writing:
+- Cartesia: https://cartesia.ai (STT)
+- Cerebras: https://cloud.cerebras.ai (LLM)
+- Groq: https://console.groq.com (LLM)
 
 ### 2. Set Up the Server
 
 ```bash
 cd server
 
-# Copy environment template
+# Copy environment template and add your API keys
 cp .env.example .env
-
-# Add your API keys to .env
-vim .env
 
 # Install dependencies
 uv sync
@@ -101,7 +129,7 @@ pnpm install
 pnpm dev
 ```
 
-### 4. Use It
+### 4. Usage
 
 1. Start the server first (`uv run python main.py`)
 2. Start the app (`pnpm dev`)
@@ -135,7 +163,9 @@ pnpm dev           # Start Tauri app in dev mode
 pnpm dev:vite      # Start Vite dev server only
 pnpm lint          # Lint and format code (Biome)
 pnpm typecheck     # Run TypeScript type checking
-pnpm check         # Run lint + typecheck
+pnpm knip          # Check for unused exports/dependencies
+pnpm cargo         # Run Clippy and format Rust code
+pnpm check         # Run all checks (lint + typecheck + knip + cargo)
 
 # Production Build
 pnpm build         # Build for current platform
@@ -167,21 +197,28 @@ pnpm build         # Build for current platform
 
 | Variable                | Description           | Default     |
 | ----------------------- | --------------------- | ----------- |
-| `DEFAULT_STT_PROVIDER`  | Default STT provider  | `cartesia`  |
-| `DEFAULT_LLM_PROVIDER`  | Default LLM provider  | `cerebras`  |
+| `DEFAULT_STT_PROVIDER`  | Default STT provider  | —           |
+| `DEFAULT_LLM_PROVIDER`  | Default LLM provider  | —           |
 | `DICTATION_SERVER_HOST` | WebSocket server host | `127.0.0.1` |
 | `DICTATION_SERVER_PORT` | WebSocket server port | `8765`      |
 | `LOG_LEVEL`             | Logging level         | `INFO`      |
 
 ### App Configuration
 
-The app connects to `ws://localhost:8765` by default.
+The app connects to `ws://localhost:8765` by default. Settings are persisted locally and include:
+
+- **Providers** - Select active STT and LLM providers from available options
+- **Audio** - Microphone selection, sound feedback, auto-mute during recording
+- **Hotkeys** - Customize toggle and hold-to-record shortcuts
+- **LLM Cleanup Prompt** - Three customizable sections:
+  - Core Cleanup Rules - Filler word removal, grammar, punctuation commands
+  - Advanced Features - Backtrack corrections ("scratch that"), list formatting
+  - Personal Dictionary - Custom words
 
 ## Technology Stack
 
-- **App**: Tauri v2, Rust, React 19, TypeScript, Tailwind CSS, Mantine
-- **Server**: Python 3.13, Pipecat, FastAPI
-- **Communication**: WebSocket with Protobuf serialization
+- **App**: Tauri, Rust, React, TypeScript, Tailwind CSS, Mantine
+- **Server**: Python, Pipecat, FastAPI
 
 ## Acknowledgments
 

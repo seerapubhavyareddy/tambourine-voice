@@ -12,15 +12,24 @@ type ConnectionState =
 	| "recording" // Mic enabled, streaming audio
 	| "processing"; // Waiting for server response
 
+/** Information about the current retry attempt */
+export interface RetryInfo {
+	attemptNumber: number;
+	nextRetryMs: number;
+}
+
 interface RecordingState {
 	state: ConnectionState;
 	client: PipecatClient | null;
 	serverUrl: string | null;
+	/** Information about current retry attempt (null if not retrying) */
+	retryInfo: RetryInfo | null;
 
 	// Actions
 	setClient: (client: PipecatClient | null) => void;
 	setServerUrl: (url: string | null) => void;
 	setState: (state: ConnectionState) => void;
+	setRetryInfo: (info: RetryInfo | null) => void;
 
 	// State transitions
 	startConnecting: () => void;
@@ -36,10 +45,12 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
 	state: "disconnected",
 	client: null,
 	serverUrl: null,
+	retryInfo: null,
 
 	setClient: (client) => set({ client }),
 	setServerUrl: (serverUrl) => set({ serverUrl }),
 	setState: (state) => set({ state }),
+	setRetryInfo: (retryInfo) => set({ retryInfo }),
 
 	startConnecting: () => {
 		const currentState = get().state;
@@ -51,7 +62,7 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
 	handleConnected: () => {
 		const currentState = get().state;
 		if (currentState === "connecting" || currentState === "disconnected") {
-			set({ state: "idle" });
+			set({ state: "idle", retryInfo: null });
 		}
 	},
 
@@ -150,5 +161,5 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
 		}
 	},
 
-	reset: () => set({ state: "disconnected", client: null }),
+	reset: () => set({ state: "disconnected", client: null, retryInfo: null }),
 }));

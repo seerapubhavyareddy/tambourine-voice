@@ -1,11 +1,14 @@
 import { ActionIcon, Button } from "@mantine/core";
 import { useClipboard } from "@mantine/hooks";
+import { useQueryClient } from "@tanstack/react-query";
 import { Copy, MessageSquare, Trash2 } from "lucide-react";
+import { useEffect } from "react";
 import {
 	useClearHistory,
 	useDeleteHistoryEntry,
 	useHistory,
 } from "../lib/queries";
+import { tauriAPI } from "../lib/tauri";
 
 function formatTime(timestamp: string): string {
 	const date = new Date(timestamp);
@@ -60,10 +63,28 @@ function groupHistoryByDate(
 }
 
 export function HistoryFeed() {
+	const queryClient = useQueryClient();
 	const { data: history, isLoading, error } = useHistory(100);
 	const deleteEntry = useDeleteHistoryEntry();
 	const clearHistory = useClearHistory();
 	const clipboard = useClipboard();
+
+	// Listen for history changes from other windows (e.g., overlay after transcription)
+	useEffect(() => {
+		let unlisten: (() => void) | undefined;
+
+		const setup = async () => {
+			unlisten = await tauriAPI.onHistoryChanged(() => {
+				queryClient.invalidateQueries({ queryKey: ["history"] });
+			});
+		};
+
+		setup();
+
+		return () => {
+			unlisten?.();
+		};
+	}, [queryClient]);
 
 	const handleDelete = (id: string) => {
 		deleteEntry.mutate(id);

@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Sora:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Instrument+Serif&family=Sora:wght@400;500;600;700&display=swap");
 
 :root {
 	--bg-primary: #000000;
@@ -52,8 +52,8 @@ body {
 
 /* Sidebar */
 .sidebar {
-	width: 200px;
-	min-width: 200px;
+	width: 72px;
+	min-width: 72px;
 	background: var(--bg-sidebar);
 	border-right: 1px solid var(--border-subtle);
 	display: flex;
@@ -62,7 +62,7 @@ body {
 }
 
 .sidebar-header {
-	padding: 0 20px 24px;
+	padding: 0 12px 24px;
 	border-bottom: 1px solid var(--border-subtle);
 	margin-bottom: 16px;
 }
@@ -70,25 +70,23 @@ body {
 .sidebar-logo {
 	display: flex;
 	align-items: center;
-	gap: 5px;
-}
-
-.sidebar-title {
-	font-family: "Sora", sans-serif;
-	font-size: 18px;
-	font-weight: 600;
-	color: var(--text-primary);
-	letter-spacing: -0.02em;
+	justify-content: center;
 }
 
 .sidebar-nav {
 	flex: 1;
 	padding: 0 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
 }
 
 .sidebar-nav-link {
 	border-radius: 8px;
 	color: var(--text-primary);
+	padding: 12px;
+	display: flex;
+	justify-content: center;
 }
 
 .sidebar-nav-link[data-active] {
@@ -96,9 +94,12 @@ body {
 }
 
 .sidebar-footer {
-	padding: 16px 20px;
+	padding: 16px 12px;
 	border-top: 1px solid var(--border-subtle);
 	margin-top: auto;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
 }
 
 .sidebar-footer-text {

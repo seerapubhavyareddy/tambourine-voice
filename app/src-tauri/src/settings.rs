@@ -21,6 +21,54 @@ impl Default for HotkeyConfig {
     }
 }
 
+/// Configuration for a single prompt section
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PromptSection {
+    /// Whether this section is enabled
+    pub enabled: bool,
+    /// Custom content (None = use default)
+    pub content: Option<String>,
+}
+
+impl Default for PromptSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            content: None,
+        }
+    }
+}
+
+/// Configuration for all cleanup prompt sections
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CleanupPromptSections {
+    /// Main prompt section (core rules, punctuation, new lines)
+    pub main: PromptSection,
+    /// Advanced features section (backtrack corrections, list formatting)
+    pub advanced: PromptSection,
+    /// Personal dictionary section (word mappings)
+    pub dictionary: PromptSection,
+}
+
+impl Default for CleanupPromptSections {
+    fn default() -> Self {
+        Self {
+            main: PromptSection {
+                enabled: true,
+                content: None,
+            },
+            advanced: PromptSection {
+                enabled: true,
+                content: None,
+            },
+            dictionary: PromptSection {
+                enabled: false,
+                content: None,
+            },
+        }
+    }
+}
+
 /// Application settings that are persisted to disk
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -40,9 +88,9 @@ pub struct AppSettings {
     #[serde(default = "default_sound_enabled")]
     pub sound_enabled: bool,
 
-    /// Custom LLM cleanup prompt (None = use server default)
+    /// Cleanup prompt sections configuration
     #[serde(default)]
-    pub cleanup_prompt: Option<String>,
+    pub cleanup_prompt_sections: Option<CleanupPromptSections>,
 
     /// Selected STT provider (None = use server default)
     #[serde(default)]
@@ -82,7 +130,7 @@ impl Default for AppSettings {
             hold_hotkey: default_hold_hotkey(),
             selected_mic_id: None,
             sound_enabled: true,
-            cleanup_prompt: None,
+            cleanup_prompt_sections: None,
             stt_provider: None,
             llm_provider: None,
             auto_mute_audio: false,
@@ -205,14 +253,17 @@ impl SettingsManager {
         self.save()
     }
 
-    /// Update the cleanup prompt setting
-    pub fn update_cleanup_prompt(&self, prompt: Option<String>) -> Result<(), String> {
+    /// Update the cleanup prompt sections setting
+    pub fn update_cleanup_prompt_sections(
+        &self,
+        sections: Option<CleanupPromptSections>,
+    ) -> Result<(), String> {
         {
             let mut settings = self
                 .settings
                 .write()
                 .map_err(|e| format!("Failed to write settings: {}", e))?;
-            settings.cleanup_prompt = prompt;
+            settings.cleanup_prompt_sections = sections;
         }
         self.save()
     }

@@ -9,7 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel
 
-from processors.llm_cleanup import CLEANUP_SYSTEM_PROMPT
+from processors.llm_cleanup import (
+    ADVANCED_PROMPT_DEFAULT,
+    MAIN_PROMPT_DEFAULT,
+    combine_prompt_sections,
+)
 from services.providers import (
     LLM_PROVIDER_LABELS,
     STT_PROVIDER_LABELS,
@@ -105,23 +109,32 @@ def set_service_switchers(
             _current_llm_provider = next(iter(llm_services.keys()))
 
 
-class PromptUpdate(BaseModel):
-    """Request body for updating the cleanup prompt."""
+class PromptSectionData(BaseModel):
+    """Data for a single prompt section."""
 
-    prompt: str | None
-
-
-class DefaultPromptResponse(BaseModel):
-    """Response for the default prompt endpoint."""
-
-    prompt: str
+    enabled: bool
+    content: str | None
 
 
-class CurrentPromptResponse(BaseModel):
-    """Response for the current prompt endpoint."""
+class PromptSectionsData(BaseModel):
+    """All prompt sections."""
 
-    prompt: str
-    is_custom: bool
+    main: PromptSectionData
+    advanced: PromptSectionData
+    dictionary: PromptSectionData
+
+
+class PromptSectionsUpdate(BaseModel):
+    """Request body for updating prompt sections."""
+
+    sections: PromptSectionsData
+
+
+class DefaultSectionsResponse(BaseModel):
+    """Response with default prompts for each section."""
+
+    main: str
+    advanced: str
 
 
 class SetPromptResponse(BaseModel):
@@ -131,32 +144,32 @@ class SetPromptResponse(BaseModel):
     error: str | None = None
 
 
-@app.get("/api/prompt/default", response_model=DefaultPromptResponse)
-async def get_default_prompt() -> DefaultPromptResponse:
-    """Get the built-in default cleanup prompt."""
-    return DefaultPromptResponse(prompt=CLEANUP_SYSTEM_PROMPT)
+@app.get("/api/prompt/sections/default", response_model=DefaultSectionsResponse)
+async def get_default_sections() -> DefaultSectionsResponse:
+    """Get default prompts for each section."""
+    return DefaultSectionsResponse(
+        main=MAIN_PROMPT_DEFAULT,
+        advanced=ADVANCED_PROMPT_DEFAULT,
+    )
 
 
-@app.get("/api/prompt/current", response_model=CurrentPromptResponse)
-async def get_current_prompt() -> CurrentPromptResponse:
-    """Get the currently active cleanup prompt (custom or default)."""
-    if _llm_converter:
-        return CurrentPromptResponse(
-            prompt=_llm_converter.system_prompt,
-            is_custom=_llm_converter._custom_prompt is not None,
-        )
-    return CurrentPromptResponse(prompt=CLEANUP_SYSTEM_PROMPT, is_custom=False)
-
-
-@app.post("/api/prompt", response_model=SetPromptResponse)
-async def set_prompt(data: PromptUpdate) -> SetPromptResponse:
-    """Set a custom cleanup prompt or reset to default.
+@app.post("/api/prompt/sections", response_model=SetPromptResponse)
+async def set_prompt_sections(data: PromptSectionsUpdate) -> SetPromptResponse:
+    """Update prompt sections and combine them into the active prompt.
 
     Args:
-        data: The prompt update request. Set prompt to null to reset to default.
+        data: The prompt sections update request.
     """
     if _llm_converter:
-        _llm_converter.set_custom_prompt(data.prompt)
+        combined = combine_prompt_sections(
+            main_enabled=data.sections.main.enabled,
+            main_content=data.sections.main.content,
+            advanced_enabled=data.sections.advanced.enabled,
+            advanced_content=data.sections.advanced.content,
+            dictionary_enabled=data.sections.dictionary.enabled,
+            dictionary_content=data.sections.dictionary.content,
+        )
+        _llm_converter.set_custom_prompt(combined if combined else None)
         return SetPromptResponse(success=True)
     return SetPromptResponse(success=False, error="LLM converter not initialized")
 

@@ -18,8 +18,8 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from utils.logger import logger
 
-# System prompt for text cleanup
-CLEANUP_SYSTEM_PROMPT = """You are a dictation cleanup assistant. Your task is to clean up transcribed speech.
+# Main prompt section - Core rules, punctuation, new lines
+MAIN_PROMPT_DEFAULT = """You are a dictation cleanup assistant. Your task is to clean up transcribed speech.
 
 ## Core Rules
 - Remove filler words (um, uh, like, you know, basically, literally, sort of, kind of)
@@ -28,30 +28,6 @@ CLEANUP_SYSTEM_PROMPT = """You are a dictation cleanup assistant. Your task is t
 - Keep the original meaning and tone intact
 - Do NOT add any new information or change the intent
 - Output ONLY the cleaned text, nothing else - no explanations, no quotes, no prefixes
-
-## Backtrack Corrections
-When the speaker corrects themselves mid-sentence, use only the corrected version:
-- "actually" signals a correction: "at 2 actually 3" → "at 3"
-- "scratch that" removes the previous phrase: "cookies scratch that brownies" → "brownies"
-- "wait" or "I mean" signal corrections: "on Monday wait Tuesday" → "on Tuesday"
-- Natural restatements: "as a gift... as a present" → "as a present"
-
-Examples:
-- "Let's do coffee at 2 actually 3" → "Let's do coffee at 3."
-- "I'll bring cookies scratch that brownies" → "I'll bring brownies."
-- "Send it to John I mean Jane" → "Send it to Jane."
-
-## List Formatting
-When sequence words are detected, format as a numbered list:
-- Triggers: "one", "two", "three" or "first", "second", "third"
-- Capitalize each list item
-
-Example:
-- "My goals are one finish the report two send the presentation three review feedback" →
-  "My goals are:
-  1. Finish the report
-  2. Send the presentation
-  3. Review feedback"
 
 ## Punctuation Commands
 Convert spoken punctuation to symbols:
@@ -85,6 +61,109 @@ Example:
 Input: "um so basically I was like thinking we should uh you know update the readme file"
 Output: "I was thinking we should update the readme file." """
 
+# Advanced prompt section - Backtrack corrections and list formatting
+ADVANCED_PROMPT_DEFAULT = """## Backtrack Corrections
+When the speaker corrects themselves mid-sentence, use only the corrected version:
+- "actually" signals a correction: "at 2 actually 3" → "at 3"
+- "scratch that" removes the previous phrase: "cookies scratch that brownies" → "brownies"
+- "wait" or "I mean" signal corrections: "on Monday wait Tuesday" → "on Tuesday"
+- Natural restatements: "as a gift... as a present" → "as a present"
+
+Examples:
+- "Let's do coffee at 2 actually 3" → "Let's do coffee at 3."
+- "I'll bring cookies scratch that brownies" → "I'll bring brownies."
+- "Send it to John I mean Jane" → "Send it to Jane."
+
+## List Formatting
+When sequence words are detected, format as a numbered list:
+- Triggers: "one", "two", "three" or "first", "second", "third"
+- Capitalize each list item
+
+Example:
+- "My goals are one finish the report two send the presentation three review feedback" →
+  "My goals are:
+  1. Finish the report
+  2. Send the presentation
+  3. Review feedback" """
+
+# Dictionary prompt section - Personal word mappings header
+DICTIONARY_PROMPT_DEFAULT = """## Personal Dictionary
+Apply these corrections for technical terms and proper nouns:"""
+
+
+def format_dictionary_section(dictionary_content: str) -> str:
+    """Format dictionary entries into a prompt section.
+
+    Supports two formats:
+    1. Explicit mapping: "source -> target" (always replace)
+    2. Single word: "term" (recognize phonetic variations)
+    """
+    if not dictionary_content or not dictionary_content.strip():
+        return ""
+
+    lines = dictionary_content.strip().split("\n")
+    explicit_mappings: list[str] = []
+    recognized_terms: list[str] = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        if " -> " in line:
+            # Explicit mapping
+            parts = line.split(" -> ", 1)
+            if len(parts) == 2:
+                source, target = parts[0].strip(), parts[1].strip()
+                if source and target:
+                    explicit_mappings.append(f'- "{source}" → "{target}"')
+        else:
+            # Single word - recognized term
+            if line:
+                recognized_terms.append(f'- "{line}"')
+
+    if not explicit_mappings and not recognized_terms:
+        return ""
+
+    result = DICTIONARY_PROMPT_DEFAULT + "\n"
+
+    if explicit_mappings:
+        result += "\nExplicit mappings (always replace):\n"
+        result += "\n".join(explicit_mappings)
+
+    if recognized_terms:
+        result += "\n\nRecognized terms (correct phonetic mismatches - use context to determine when misheard words should be these terms):\n"
+        result += "\n".join(recognized_terms)
+
+    return result
+
+
+def combine_prompt_sections(
+    main_enabled: bool,
+    main_content: str | None,
+    advanced_enabled: bool,
+    advanced_content: str | None,
+    dictionary_enabled: bool,
+    dictionary_content: str | None,
+) -> str:
+    """Combine enabled prompt sections into a single prompt."""
+    parts: list[str] = []
+
+    if main_enabled:
+        content = main_content if main_content else MAIN_PROMPT_DEFAULT
+        parts.append(content)
+
+    if advanced_enabled:
+        content = advanced_content if advanced_content else ADVANCED_PROMPT_DEFAULT
+        parts.append(content)
+
+    if dictionary_enabled and dictionary_content:
+        dictionary_section = format_dictionary_section(dictionary_content)
+        if dictionary_section:
+            parts.append(dictionary_section)
+
+    return "\n\n".join(parts)
+
 
 class TranscriptionToLLMConverter(FrameProcessor):
     """Converts TranscriptionFrame to OpenAILLMContextFrame for LLM cleanup.
@@ -102,7 +181,17 @@ class TranscriptionToLLMConverter(FrameProcessor):
     @property
     def system_prompt(self) -> str:
         """Get the active system prompt (custom or default)."""
-        return self._custom_prompt if self._custom_prompt else CLEANUP_SYSTEM_PROMPT
+        if self._custom_prompt:
+            return self._custom_prompt
+        # Default: main and advanced enabled, dictionary disabled
+        return combine_prompt_sections(
+            main_enabled=True,
+            main_content=None,
+            advanced_enabled=True,
+            advanced_content=None,
+            dictionary_enabled=False,
+            dictionary_content=None,
+        )
 
     def set_custom_prompt(self, prompt: str | None) -> None:
         """Update the custom prompt at runtime.

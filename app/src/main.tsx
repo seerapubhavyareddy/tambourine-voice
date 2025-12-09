@@ -12,8 +12,8 @@ const darkTheme = createTheme({
 	primaryColor: "gray",
 	fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif",
 	headings: {
-		fontFamily: "'Sora', 'DM Sans', sans-serif",
-		fontWeight: "600",
+		fontFamily: "'Instrument Serif', serif",
+		fontWeight: "400",
 	},
 	colors: {
 		dark: [

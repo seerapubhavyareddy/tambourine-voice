@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { configAPI, type HotkeyConfig, tauriAPI } from "./tauri";
+import {
+	type CleanupPromptSections,
+	configAPI,
+	type HotkeyConfig,
+	tauriAPI,
+} from "./tauri";
 
 export function useServerUrl() {
 	return useQuery({
@@ -83,10 +88,11 @@ export function useIsAudioMuteSupported() {
 	});
 }
 
-export function useUpdateCleanupPrompt() {
+export function useUpdateCleanupPromptSections() {
 	const queryClient = useQueryClient();
 	return useMutation({
-		mutationFn: (prompt: string | null) => tauriAPI.updateCleanupPrompt(prompt),
+		mutationFn: (sections: CleanupPromptSections | null) =>
+			tauriAPI.updateCleanupPromptSections(sections),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["settings"] });
 		},
@@ -107,6 +113,8 @@ export function useAddHistoryEntry() {
 		mutationFn: (text: string) => tauriAPI.addHistoryEntry(text),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["history"] });
+			// Notify other windows about history change
+			tauriAPI.emitHistoryChanged();
 		},
 	});
 }
@@ -117,6 +125,8 @@ export function useDeleteHistoryEntry() {
 		mutationFn: (id: string) => tauriAPI.deleteHistoryEntry(id),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["history"] });
+			// Notify other windows about history change
+			tauriAPI.emitHistoryChanged();
 		},
 	});
 }
@@ -127,23 +137,26 @@ export function useClearHistory() {
 		mutationFn: () => tauriAPI.clearHistory(),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["history"] });
+			// Notify other windows about history change
+			tauriAPI.emitHistoryChanged();
 		},
 	});
 }
 
 // Config API queries and mutations (FastAPI server)
-export function useDefaultPrompt() {
+export function useDefaultSections() {
 	return useQuery({
-		queryKey: ["defaultPrompt"],
-		queryFn: () => configAPI.getDefaultPrompt(),
-		staleTime: Number.POSITIVE_INFINITY, // Default prompt never changes
+		queryKey: ["defaultSections"],
+		queryFn: () => configAPI.getDefaultSections(),
+		staleTime: Number.POSITIVE_INFINITY, // Default prompts never change
 		retry: false, // Don't retry if server not available
 	});
 }
 
-export function useSetServerPrompt() {
+export function useSetServerPromptSections() {
 	return useMutation({
-		mutationFn: (prompt: string | null) => configAPI.setPrompt(prompt),
+		mutationFn: (sections: CleanupPromptSections) =>
+			configAPI.setPromptSections(sections),
 	});
 }
 

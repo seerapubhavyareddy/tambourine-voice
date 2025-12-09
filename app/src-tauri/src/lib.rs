@@ -47,7 +47,7 @@ pub fn run() {
             commands::settings::update_hold_hotkey,
             commands::settings::update_selected_mic,
             commands::settings::update_sound_enabled,
-            commands::settings::update_cleanup_prompt,
+            commands::settings::update_cleanup_prompt_sections,
             commands::settings::update_stt_provider,
             commands::settings::update_llm_provider,
             commands::settings::update_auto_mute_audio,

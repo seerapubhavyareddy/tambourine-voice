@@ -34,7 +34,7 @@ dirs = "6.0.0"
 
 # Audio playback
 rodio = { version = "0.21.1", default-features = false, features = [
-    "wav",
+    "mp3",
     "playback",
 ] }
 

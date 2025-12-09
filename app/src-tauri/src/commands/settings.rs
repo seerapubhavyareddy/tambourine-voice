@@ -1,4 +1,4 @@
-use crate::settings::{AppSettings, HotkeyConfig, SettingsManager};
+use crate::settings::{AppSettings, CleanupPromptSections, HotkeyConfig, SettingsManager};
 use tauri::State;
 
 /// Get the current application settings
@@ -54,13 +54,13 @@ pub async fn update_sound_enabled(
     settings_manager.update_sound_enabled(enabled)
 }
 
-/// Update the cleanup prompt setting
+/// Update the cleanup prompt sections setting
 #[tauri::command]
-pub async fn update_cleanup_prompt(
-    prompt: Option<String>,
+pub async fn update_cleanup_prompt_sections(
+    sections: Option<CleanupPromptSections>,
     settings_manager: State<'_, SettingsManager>,
 ) -> Result<(), String> {
-    settings_manager.update_cleanup_prompt(prompt)
+    settings_manager.update_cleanup_prompt_sections(sections)
 }
 
 /// Update the STT provider setting

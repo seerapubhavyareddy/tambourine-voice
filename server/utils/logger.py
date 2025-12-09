@@ -6,14 +6,21 @@ import sys
 from loguru import logger
 
 
-def configure_logging() -> None:
+def configure_logging(log_level: str | None = None) -> None:
     """
     Configure loguru logging with sensible defaults.
 
-    Configures log level from LOG_LEVEL environment variable and sets up
-    colored output to stdout.
+    Args:
+        log_level: Optional log level to use. If provided, takes precedence over
+                   the LOG_LEVEL environment variable. Defaults to "INFO" if neither
+                   is set.
+
+    Configures log level and sets up colored output to stdout.
     """
-    log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+    if log_level is not None:
+        log_level_str = log_level.upper()
+    else:
+        log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
 
     # Remove default handler
     logger.remove()

@@ -11,11 +11,12 @@ import {
 	WebSocketTransport,
 } from "@pipecat-ai/websocket-transport";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useConnectionManager } from "./hooks/useConnectionManager";
 import {
 	useAddHistoryEntry,
 	useServerUrl,
 	useSetServerLLMProvider,
-	useSetServerPrompt,
+	useSetServerPromptSections,
 	useSetServerSTTProvider,
 	useSettings,
 	useTypeText,
@@ -50,16 +51,8 @@ function isRecordingCompleteMessage(
 
 function RecordingControl() {
 	const client = usePipecatClient();
-	const {
-		state,
-		setClient,
-		startRecording,
-		stopRecording,
-		handleConnected,
-		handleDisconnected,
-		handleResponse,
-		startConnecting,
-	} = useRecordingStore();
+	const { state, setClient, startRecording, stopRecording, handleResponse } =
+		useRecordingStore();
 	const containerRef = useRef<HTMLDivElement>(null);
 
 	// Refs for click vs drag detection
@@ -67,13 +60,33 @@ function RecordingControl() {
 	const mouseDownPositionRef = useRef<{ x: number; y: number } | null>(null);
 	const hasDragStartedRef = useRef<boolean>(false);
 
+	// Ref to prevent double-triggering reconnection
+	const hasTriggeredDisconnectRef = useRef<boolean>(false);
+
 	const { data: serverUrl } = useServerUrl();
 	const { data: settings } = useSettings();
+
+	// Use the connection manager hook for connection lifecycle with exponential backoff
+	const { handlePipecatConnect, handlePipecatDisconnect } =
+		useConnectionManager({
+			client: client ?? null,
+			serverUrl: serverUrl ?? null,
+			onMidRecordingDisconnect: () => {
+				// Stop recording gracefully when connection drops mid-recording
+				if (client) {
+					try {
+						client.enableMic(false);
+					} catch {
+						// Ignore errors when disabling mic
+					}
+				}
+			},
+		});
 
 	// TanStack Query hooks
 	const typeTextMutation = useTypeText();
 	const addHistoryEntry = useAddHistoryEntry();
-	const setServerPrompt = useSetServerPrompt();
+	const setServerPromptSections = useSetServerPromptSections();
 	const setServerSTTProvider = useSetServerSTTProvider();
 	const setServerLLMProvider = useSetServerLLMProvider();
 
@@ -119,56 +132,6 @@ function RecordingControl() {
 		return () => observer.disconnect();
 	}, []);
 
-	// Connect to server on startup with retry logic
-	useEffect(() => {
-		if (!client || !serverUrl) return;
-
-		let retryTimeoutId: ReturnType<typeof setTimeout> | null = null;
-		let cancelled = false;
-		let isConnecting = false;
-
-		const connectWithRetry = async () => {
-			if (cancelled || isConnecting) return;
-
-			const state = useRecordingStore.getState().state;
-			// Only attempt connection if disconnected
-			if (state !== "disconnected") return;
-
-			isConnecting = true;
-			startConnecting();
-
-			try {
-				await client.connect({ wsUrl: serverUrl });
-				// Connection successful - the Connected event will handle state transition
-			} catch (error) {
-				console.error("Failed to connect:", error);
-				handleDisconnected();
-
-				// Schedule retry after 2 seconds if not cancelled
-				if (!cancelled) {
-					retryTimeoutId = setTimeout(() => {
-						isConnecting = false;
-						connectWithRetry();
-					}, 2000);
-				}
-			} finally {
-				if (!cancelled) {
-					isConnecting = false;
-				}
-			}
-		};
-
-		// Start connection attempt
-		connectWithRetry();
-
-		return () => {
-			cancelled = true;
-			if (retryTimeoutId) {
-				clearTimeout(retryTimeoutId);
-			}
-		};
-	}, [client, serverUrl, startConnecting, handleDisconnected]);
-
 	// Handle start/stop recording from hotkeys
 	const onStartRecording = useCallback(async () => {
 		console.log("[Recording] Starting recording...");
@@ -210,13 +173,17 @@ function RecordingControl() {
 
 		const onConnected = () => {
 			console.log("[Pipecat] Connected to server");
-			handleConnected();
+			hasTriggeredDisconnectRef.current = false; // Reset on successful connection
+			handlePipecatConnect();
 
-			// Sync custom cleanup prompt to server via REST API
+			// Sync cleanup prompt sections to server via REST API
 			// This ensures the server uses the saved prompt from Tauri settings
-			const promptToSync = settings?.cleanup_prompt ?? null;
-			setServerPrompt.mutate(promptToSync);
-			console.log("[Pipecat] Synced cleanup prompt to server via REST API");
+			if (settings?.cleanup_prompt_sections) {
+				setServerPromptSections.mutate(settings.cleanup_prompt_sections);
+				console.log(
+					"[Pipecat] Synced cleanup prompt sections to server via REST API",
+				);
+			}
 
 			// Sync provider preferences to server
 			if (settings?.stt_provider) {
@@ -237,20 +204,11 @@ function RecordingControl() {
 
 		const onDisconnected = () => {
 			console.log("[Pipecat] Disconnected from server");
-			handleDisconnected();
-
-			// Attempt reconnection after delay
-			setTimeout(async () => {
-				const { state } = useRecordingStore.getState();
-				if (serverUrl && state === "disconnected") {
-					startConnecting();
-					try {
-						await client.connect({ wsUrl: serverUrl });
-					} catch {
-						handleDisconnected();
-					}
-				}
-			}, 2000);
+			// The connection manager handles reconnection with exponential backoff
+			if (!hasTriggeredDisconnectRef.current) {
+				hasTriggeredDisconnectRef.current = true;
+				handlePipecatDisconnect();
+			}
 		};
 
 		const onServerMessage = async (message: unknown) => {
@@ -307,6 +265,14 @@ function RecordingControl() {
 
 		const onTransportStateChanged = (transportState: unknown) => {
 			console.log("[Pipecat] Transport state changed:", transportState);
+
+			// Trigger reconnection on error state if not already handled
+			// This handles cases where Disconnected event never fires
+			if (transportState === "error" && !hasTriggeredDisconnectRef.current) {
+				console.log("[Pipecat] Error state detected, triggering reconnection");
+				hasTriggeredDisconnectRef.current = true;
+				handlePipecatDisconnect();
+			}
 		};
 
 		client.on(RTVIEvent.Connected, onConnected);
@@ -336,16 +302,14 @@ function RecordingControl() {
 		};
 	}, [
 		client,
-		serverUrl,
 		settings,
-		handleConnected,
-		handleDisconnected,
+		handlePipecatConnect,
+		handlePipecatDisconnect,
 		handleResponse,
-		startConnecting,
 		typeTextMutation,
 		addHistoryEntry,
 		clearResponseTimeout,
-		setServerPrompt,
+		setServerPromptSections,
 		setServerSTTProvider,
 		setServerLLMProvider,
 	]);

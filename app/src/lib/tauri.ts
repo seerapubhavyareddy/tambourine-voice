@@ -9,6 +9,15 @@ export type ConnectionState =
 	| "recording"
 	| "processing";
 
+/** Information about retry status for cross-window communication */
+export interface RetryStatusPayload {
+	state: ConnectionState;
+	retryInfo: {
+		attemptNumber: number;
+		nextRetryMs: number;
+	} | null;
+}
+
 interface TypeTextResult {
 	success: boolean;
 	error?: string;
@@ -25,12 +34,23 @@ interface HistoryEntry {
 	text: string;
 }
 
-interface AppSettings {
+export interface PromptSection {
+	enabled: boolean;
+	content: string | null;
+}
+
+export interface CleanupPromptSections {
+	main: PromptSection;
+	advanced: PromptSection;
+	dictionary: PromptSection;
+}
+
+export interface AppSettings {
 	toggle_hotkey: HotkeyConfig;
 	hold_hotkey: HotkeyConfig;
 	selected_mic_id: string | null;
 	sound_enabled: boolean;
-	cleanup_prompt: string | null;
+	cleanup_prompt_sections: CleanupPromptSections | null;
 	stt_provider: string | null;
 	llm_provider: string | null;
 	auto_mute_audio: boolean;
@@ -83,8 +103,10 @@ export const tauriAPI = {
 		return invoke("update_sound_enabled", { enabled });
 	},
 
-	async updateCleanupPrompt(prompt: string | null): Promise<void> {
-		return invoke("update_cleanup_prompt", { prompt });
+	async updateCleanupPromptSections(
+		sections: CleanupPromptSections | null,
+	): Promise<void> {
+		return invoke("update_cleanup_prompt_sections", { sections });
 	},
 
 	async updateSTTProvider(provider: string | null): Promise<void> {
@@ -145,18 +167,38 @@ export const tauriAPI = {
 			},
 		);
 	},
+
+	// Retry status sync between windows (includes retry info)
+	async emitRetryStatus(payload: RetryStatusPayload): Promise<void> {
+		return emit("retry-status-changed", payload);
+	},
+
+	async onRetryStatusChanged(
+		callback: (payload: RetryStatusPayload) => void,
+	): Promise<UnlistenFn> {
+		return listen<RetryStatusPayload>("retry-status-changed", (event) => {
+			callback(event.payload);
+		});
+	},
+
+	// History sync between windows
+	async emitHistoryChanged(): Promise<void> {
+		return emit("history-changed", {});
+	},
+
+	async onHistoryChanged(callback: () => void): Promise<UnlistenFn> {
+		return listen("history-changed", () => {
+			callback();
+		});
+	},
 };
 
 // Config API for server-side settings (FastAPI)
 const CONFIG_API_URL = "http://127.0.0.1:8766";
 
-interface DefaultPromptResponse {
-	prompt: string;
-}
-
-interface CurrentPromptResponse {
-	prompt: string;
-	is_custom: boolean;
+export interface DefaultSectionsResponse {
+	main: string;
+	advanced: string;
 }
 
 interface SetPromptResponse {
@@ -186,21 +228,20 @@ interface SwitchProviderResponse {
 }
 
 export const configAPI = {
-	async getDefaultPrompt(): Promise<DefaultPromptResponse> {
-		const response = await fetch(`${CONFIG_API_URL}/api/prompt/default`);
+	async getDefaultSections(): Promise<DefaultSectionsResponse> {
+		const response = await fetch(
+			`${CONFIG_API_URL}/api/prompt/sections/default`,
+		);
 		return response.json();
 	},
 
-	async getCurrentPrompt(): Promise<CurrentPromptResponse> {
-		const response = await fetch(`${CONFIG_API_URL}/api/prompt/current`);
-		return response.json();
-	},
-
-	async setPrompt(prompt: string | null): Promise<SetPromptResponse> {
-		const response = await fetch(`${CONFIG_API_URL}/api/prompt`, {
+	async setPromptSections(
+		sections: CleanupPromptSections,
+	): Promise<SetPromptResponse> {
+		const response = await fetch(`${CONFIG_API_URL}/api/prompt/sections`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ prompt }),
+			body: JSON.stringify({ sections }),
 		});
 		return response.json();
 	},

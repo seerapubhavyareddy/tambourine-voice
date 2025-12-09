@@ -320,8 +320,9 @@ def main(
         dictation-server --port 9000
         dictation-server --host 0.0.0.0 --port 8765
     """
-    # Configure logging
-    configure_logging()
+    # Configure logging (verbose flag overrides LOG_LEVEL env var)
+    log_level = "DEBUG" if verbose else None
+    configure_logging(log_level)
 
     if verbose:
         logger.info("Verbose logging enabled")

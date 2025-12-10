@@ -91,6 +91,21 @@ sudo apt-get install libwebkit2gtk-4.1-dev build-essential curl wget file \
   libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libgtk-3-dev
 ```
 
+## Permissions
+
+### Microphone Access
+
+When you first use Tambourine, your operating system will prompt you to grant microphone access. Accept this permission to enable voice dictation.
+
+### macOS Accessibility Permissions
+
+On macOS, Tambourine needs accessibility permissions to type text at your cursor position.
+
+- **Running the built app**: Grant accessibility access to "Tambourine"
+- **Running in development**: Grant accessibility access to the application you run the code from:
+  - If running from VS Code: Add "Visual Studio Code"
+  - If running from Terminal: Add "Terminal" (or your terminal app like iTerm2)
+
 ## Quick Start
 
 ### 1. Get API Keys

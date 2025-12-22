@@ -251,6 +251,10 @@ The app connects to `localhost:8765` by default via WebRTC. Settings are persist
 
 Built with [Tauri](https://tauri.app/) for the cross-platform desktop app and [Pipecat](https://github.com/pipecat-ai/pipecat) for the modular voice AI pipeline.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
 ## License
 
 [AGPL-3.0](LICENSE)

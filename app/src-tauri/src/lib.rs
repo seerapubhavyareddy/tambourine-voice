@@ -39,13 +39,30 @@ tauri_nspanel::tauri_panel! {
 }
 
 /// Normalize a shortcut string for comparison (handles "ctrl" vs "control" differences)
+/// Also handles Tauri's "keyX" format for letter keys (e.g., "keyv" -> "v")
 #[cfg(desktop)]
 pub(crate) fn normalize_shortcut_string(s: &str) -> String {
-    s.to_lowercase()
+    let normalized = s
+        .to_lowercase()
         .replace("ctrl", "control")
         .replace("cmd", "super")
         .replace("meta", "super")
-        .replace("win", "super")
+        .replace("win", "super");
+
+    // Handle Tauri's "keyX" format for letter keys (e.g., "control+alt+keyv" -> "control+alt+v")
+    // Split by '+', normalize each part, rejoin
+    normalized
+        .split('+')
+        .map(|part| {
+            // If part starts with "key" and is followed by a single letter, strip the "key" prefix
+            if part.starts_with("key") && part.len() == 4 {
+                &part[3..]
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 /// Helper to read a setting from the store with a default fallback
@@ -60,6 +77,24 @@ fn get_setting_from_store<T: serde::de::DeserializeOwned>(
         .and_then(|store| store.get(key))
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or(default)
+}
+
+/// Save a setting to the store
+#[cfg(desktop)]
+pub(crate) fn save_setting_to_store<T: serde::Serialize>(
+    app: &AppHandle,
+    key: &str,
+    value: &T,
+) -> Result<(), String> {
+    let store = app
+        .store("settings.json")
+        .map_err(|e| format!("Failed to get store: {}", e))?;
+    let json_value = serde_json::to_value(value).map_err(|e| e.to_string())?;
+    store.set(key, json_value); // set() returns ()
+    store
+        .save()
+        .map_err(|e| format!("Failed to save store: {}", e))?;
+    Ok(())
 }
 
 /// Start recording with sound and audio mute handling
@@ -285,6 +320,8 @@ pub fn run() {
             commands::text::get_server_url,
             commands::settings::register_shortcuts,
             commands::settings::unregister_shortcuts,
+            commands::settings::get_shortcut_errors,
+            commands::settings::set_hotkey_enabled,
             is_audio_mute_supported,
             commands::history::add_history_entry,
             commands::history::get_history,
@@ -308,9 +345,10 @@ pub fn run() {
             }
 
             // Register shortcuts from store (now that store plugin is available)
+            // This function handles errors gracefully - it never fails the app startup
             #[cfg(desktop)]
             {
-                register_initial_shortcuts(app.handle())?;
+                register_initial_shortcuts(app.handle());
             }
 
             // Create overlay window
@@ -446,39 +484,115 @@ fn build_global_shortcut_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri_plugin_global_shortcut::Builder::new().build()
 }
 
-/// Register shortcuts from store settings (called from setup() after store plugin is available)
+/// Core shortcut registration logic - used by both initial startup and re-registration command
 #[cfg(desktop)]
-fn register_initial_shortcuts(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrationResult {
+    use state::{ShortcutErrors, ShortcutRegistrationResult};
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
     // Read hotkeys from store with defaults
-    let toggle_hotkey: HotkeyConfig =
+    let mut toggle_hotkey: HotkeyConfig =
         get_setting_from_store(app, "toggle_hotkey", HotkeyConfig::default_toggle());
-    let hold_hotkey: HotkeyConfig =
+    let mut hold_hotkey: HotkeyConfig =
         get_setting_from_store(app, "hold_hotkey", HotkeyConfig::default_hold());
-    let paste_last_hotkey: HotkeyConfig =
+    let mut paste_last_hotkey: HotkeyConfig =
         get_setting_from_store(app, "paste_last_hotkey", HotkeyConfig::default_paste_last());
 
-    // Convert to shortcuts with validation (fall back to defaults if invalid)
-    let toggle_shortcut = toggle_hotkey.to_shortcut_or_default(HotkeyConfig::default_toggle);
-    let hold_shortcut = hold_hotkey.to_shortcut_or_default(HotkeyConfig::default_hold);
-    let paste_last_shortcut =
-        paste_last_hotkey.to_shortcut_or_default(HotkeyConfig::default_paste_last);
-
     log::info!(
-        "Registering shortcuts - Toggle: {}, Hold: {}, PasteLast: {}",
+        "Registering shortcuts - Toggle: {} (enabled: {}), Hold: {} (enabled: {}), PasteLast: {} (enabled: {})",
         toggle_hotkey.to_shortcut_string(),
+        toggle_hotkey.enabled,
         hold_hotkey.to_shortcut_string(),
-        paste_last_hotkey.to_shortcut_string()
+        hold_hotkey.enabled,
+        paste_last_hotkey.to_shortcut_string(),
+        paste_last_hotkey.enabled
     );
 
-    let shortcuts: Vec<Shortcut> = vec![toggle_shortcut, hold_shortcut, paste_last_shortcut];
+    let shortcut_manager = app.global_shortcut();
+    let _ = shortcut_manager.unregister_all();
 
-    app.global_shortcut()
-        .on_shortcuts(shortcuts, |app, shortcut, event| {
-            handle_shortcut_event(app, shortcut, &event);
-        })?;
+    let mut result = ShortcutRegistrationResult {
+        toggle_registered: false,
+        hold_registered: false,
+        paste_last_registered: false,
+        errors: ShortcutErrors::default(),
+    };
 
-    log::info!("Shortcuts registered successfully");
-    Ok(())
+    // Helper to try registering a single shortcut
+    let try_register = |hotkey: &mut HotkeyConfig,
+                        name: &str,
+                        store_key: &str,
+                        default_fn: fn() -> HotkeyConfig,
+                        registered: &mut bool,
+                        error: &mut Option<String>| {
+        if !hotkey.enabled {
+            log::info!("{} shortcut is disabled, skipping", name);
+            return;
+        }
+
+        let shortcut = hotkey.to_shortcut_or_default(default_fn);
+        match shortcut_manager.on_shortcut(shortcut, |app_handle, shortcut, event| {
+            handle_shortcut_event(app_handle, shortcut, &event);
+        }) {
+            Ok(_) => {
+                *registered = true;
+                log::info!("{} shortcut registered", name);
+            }
+            Err(e) => {
+                *error = Some(format!("Hotkey conflict: {}", e));
+                log::warn!(
+                    "Failed to register {} shortcut: {}. Auto-disabling.",
+                    name,
+                    e
+                );
+                hotkey.enabled = false;
+                let _ = save_setting_to_store(app, store_key, hotkey);
+            }
+        }
+    };
+
+    try_register(
+        &mut toggle_hotkey,
+        "Toggle",
+        "toggle_hotkey",
+        HotkeyConfig::default_toggle,
+        &mut result.toggle_registered,
+        &mut result.errors.toggle_error,
+    );
+    try_register(
+        &mut hold_hotkey,
+        "Hold",
+        "hold_hotkey",
+        HotkeyConfig::default_hold,
+        &mut result.hold_registered,
+        &mut result.errors.hold_error,
+    );
+    try_register(
+        &mut paste_last_hotkey,
+        "PasteLast",
+        "paste_last_hotkey",
+        HotkeyConfig::default_paste_last,
+        &mut result.paste_last_registered,
+        &mut result.errors.paste_last_error,
+    );
+
+    // Store errors in app state
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(mut shortcut_errors) = state.shortcut_errors.write() {
+            *shortcut_errors = result.errors.clone();
+        }
+    }
+
+    result
+}
+
+/// Register shortcuts from store settings (called from setup() after store plugin is available)
+#[cfg(desktop)]
+fn register_initial_shortcuts(app: &AppHandle) {
+    let result = do_register_shortcuts(app);
+    if result.errors.has_any_error() {
+        log::warn!("Some shortcuts failed to register. Check settings to resolve conflicts.");
+    } else {
+        log::info!("All shortcuts registered successfully");
+    }
 }

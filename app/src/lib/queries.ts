@@ -69,92 +69,51 @@ export function useSettings() {
 	});
 }
 
-export function useUpdateToggleHotkey() {
-	const queryClient = useQueryClient();
-	return useMutation({
-		mutationFn: async (hotkey: HotkeyConfig) => {
-			// Get current settings for validation
-			const settings = await tauriAPI.getSettings();
+type HotkeyType = "toggle" | "hold" | "paste_last";
 
-			// Validate no duplicate
-			const error = validateHotkeyNotDuplicate(
-				hotkey,
-				{
-					toggle: settings.toggle_hotkey,
-					hold: settings.hold_hotkey,
-					paste_last: settings.paste_last_hotkey,
-				},
-				"toggle",
-			);
-			if (error) throw new Error(error);
+function createHotkeyUpdateHook(
+	hotkeyType: HotkeyType,
+	updateFn: (hotkey: HotkeyConfig) => Promise<void>,
+) {
+	return function useUpdateHotkey() {
+		const queryClient = useQueryClient();
+		return useMutation({
+			mutationFn: async (hotkey: HotkeyConfig) => {
+				const settings = await tauriAPI.getSettings();
+				const error = validateHotkeyNotDuplicate(
+					hotkey,
+					{
+						toggle: settings.toggle_hotkey,
+						hold: settings.hold_hotkey,
+						paste_last: settings.paste_last_hotkey,
+					},
+					hotkeyType,
+				);
+				if (error) throw new Error(error);
 
-			// Save and re-register
-			await tauriAPI.updateToggleHotkey(hotkey);
-			await tauriAPI.registerShortcuts();
-		},
-		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: ["settings"] });
-		},
-	});
+				await updateFn(hotkey);
+				await tauriAPI.registerShortcuts();
+			},
+			onSettled: () => {
+				queryClient.invalidateQueries({ queryKey: ["settings"] });
+				queryClient.refetchQueries({ queryKey: ["shortcutErrors"] });
+			},
+		});
+	};
 }
 
-export function useUpdateHoldHotkey() {
-	const queryClient = useQueryClient();
-	return useMutation({
-		mutationFn: async (hotkey: HotkeyConfig) => {
-			// Get current settings for validation
-			const settings = await tauriAPI.getSettings();
-
-			// Validate no duplicate
-			const error = validateHotkeyNotDuplicate(
-				hotkey,
-				{
-					toggle: settings.toggle_hotkey,
-					hold: settings.hold_hotkey,
-					paste_last: settings.paste_last_hotkey,
-				},
-				"hold",
-			);
-			if (error) throw new Error(error);
-
-			// Save and re-register
-			await tauriAPI.updateHoldHotkey(hotkey);
-			await tauriAPI.registerShortcuts();
-		},
-		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: ["settings"] });
-		},
-	});
-}
-
-export function useUpdatePasteLastHotkey() {
-	const queryClient = useQueryClient();
-	return useMutation({
-		mutationFn: async (hotkey: HotkeyConfig) => {
-			// Get current settings for validation
-			const settings = await tauriAPI.getSettings();
-
-			// Validate no duplicate
-			const error = validateHotkeyNotDuplicate(
-				hotkey,
-				{
-					toggle: settings.toggle_hotkey,
-					hold: settings.hold_hotkey,
-					paste_last: settings.paste_last_hotkey,
-				},
-				"paste_last",
-			);
-			if (error) throw new Error(error);
-
-			// Save and re-register
-			await tauriAPI.updatePasteLastHotkey(hotkey);
-			await tauriAPI.registerShortcuts();
-		},
-		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: ["settings"] });
-		},
-	});
-}
+export const useUpdateToggleHotkey = createHotkeyUpdateHook(
+	"toggle",
+	tauriAPI.updateToggleHotkey,
+);
+export const useUpdateHoldHotkey = createHotkeyUpdateHook(
+	"hold",
+	tauriAPI.updateHoldHotkey,
+);
+export const useUpdatePasteLastHotkey = createHotkeyUpdateHook(
+	"paste_last",
+	tauriAPI.updatePasteLastHotkey,
+);
 
 export function useUpdateSelectedMic() {
 	const queryClient = useQueryClient();
@@ -214,9 +173,51 @@ export function useResetHotkeysToDefaults() {
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			queryClient.invalidateQueries({ queryKey: ["shortcutErrors"] });
 		},
 		onError: (error) => {
 			console.error("Reset hotkeys failed:", error);
+		},
+	});
+}
+
+export function useShortcutErrors() {
+	return useQuery({
+		queryKey: ["shortcutErrors"],
+		queryFn: () => tauriAPI.getShortcutErrors(),
+		staleTime: 0, // Always refetch to get the latest errors
+	});
+}
+
+export function useSetHotkeyEnabled() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async ({
+			hotkeyType,
+			enabled,
+		}: {
+			hotkeyType: "toggle" | "hold" | "paste_last";
+			enabled: boolean;
+		}) => {
+			await tauriAPI.setHotkeyEnabled(hotkeyType, enabled);
+			const result = await tauriAPI.registerShortcuts();
+
+			// If enabling failed, throw an error so the UI can show it
+			if (enabled) {
+				const errorKey = `${hotkeyType}_error` as keyof typeof result.errors;
+				const registeredKey = `${hotkeyType}_registered` as keyof typeof result;
+				if (!result[registeredKey] && result.errors[errorKey]) {
+					throw new Error(result.errors[errorKey] as string);
+				}
+			}
+
+			return result;
+		},
+		onSettled: () => {
+			// Always refetch after mutation completes (success or failure)
+			// so shortcut errors are up to date
+			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			queryClient.refetchQueries({ queryKey: ["shortcutErrors"] });
 		},
 	});
 }

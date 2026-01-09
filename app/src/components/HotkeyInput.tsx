@@ -1,4 +1,5 @@
-import { Kbd } from "@mantine/core";
+import { Kbd, Switch, Tooltip } from "@mantine/core";
+import { AlertCircle } from "lucide-react";
 import { useEffect } from "react";
 import { useRecordHotkeys } from "react-hotkeys-hook";
 import type { HotkeyConfig } from "../lib/tauri";
@@ -13,6 +14,12 @@ interface HotkeyInputProps {
 	isRecording?: boolean;
 	onStartRecording?: () => void;
 	onStopRecording?: () => void;
+	// Enable/disable toggle
+	enabled?: boolean;
+	onEnabledChange?: (enabled: boolean) => void;
+	enabledLoading?: boolean;
+	// Registration error (if hotkey couldn't be registered)
+	registrationError?: string | null;
 }
 
 // Known modifier keys (lowercase, as returned by react-hotkeys-hook)
@@ -125,7 +132,10 @@ function formatKeyForTauri(key: string): string {
 /**
  * Convert recorded keys Set to HotkeyConfig
  */
-function keysToConfig(keys: Set<string>): HotkeyConfig | null {
+function keysToConfig(
+	keys: Set<string>,
+	currentEnabled: boolean,
+): HotkeyConfig | null {
 	const keysArray = Array.from(keys);
 	const modifiers: string[] = [];
 	let mainKey: string | null = null;
@@ -147,6 +157,7 @@ function keysToConfig(keys: Set<string>): HotkeyConfig | null {
 	return {
 		modifiers,
 		key: formatKeyForTauri(mainKey),
+		enabled: currentEnabled, // Preserve current enabled state
 	};
 }
 
@@ -166,6 +177,10 @@ export function HotkeyInput({
 	isRecording: externalIsRecording,
 	onStartRecording,
 	onStopRecording,
+	enabled,
+	onEnabledChange,
+	enabledLoading,
+	registrationError,
 }: HotkeyInputProps) {
 	const [keys, { start, stop, isRecording: internalIsRecording }] =
 		useRecordHotkeys();
@@ -199,13 +214,13 @@ export function HotkeyInput({
 			return;
 		}
 
-		const config = keysToConfig(keys);
+		const config = keysToConfig(keys, value.enabled);
 		if (config) {
 			onChange(config);
 			stop();
 			onStopRecording?.();
 		}
-	}, [keys, isRecording, onChange, stop, onStopRecording]);
+	}, [keys, isRecording, onChange, stop, onStopRecording, value.enabled]);
 
 	// Sync internal recording state with external state
 	useEffect(() => {
@@ -218,6 +233,8 @@ export function HotkeyInput({
 
 	const handleClick = () => {
 		if (disabled) return;
+		// Allow changing hotkey even when disabled (enabled=false)
+		// so user can fix conflicts
 
 		if (isRecording) {
 			// Clicking again cancels
@@ -234,10 +251,63 @@ export function HotkeyInput({
 		.filter((k) => k !== "escape")
 		.map((k) => formatKeyForDisplay(k));
 
+	// Determine if the toggle should be disabled
+	// Allow enabling even with registration error (user may have fixed conflict externally)
+	const toggleDisabled = disabled || enabledLoading;
+
 	return (
 		<div>
-			<p className="settings-label">{label}</p>
-			{description && <p className="settings-description">{description}</p>}
+			<div
+				style={{
+					display: "flex",
+					alignItems: "center",
+					justifyContent: "space-between",
+					gap: 12,
+				}}
+			>
+				<div style={{ flex: 1 }}>
+					<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+						<p className="settings-label" style={{ margin: 0 }}>
+							{label}
+						</p>
+						{registrationError && (
+							<Tooltip
+								label={registrationError}
+								multiline
+								w={250}
+								withArrow
+								position="top"
+							>
+								<AlertCircle
+									size={16}
+									style={{ color: "var(--mantine-color-yellow-6)" }}
+								/>
+							</Tooltip>
+						)}
+					</div>
+					{description && <p className="settings-description">{description}</p>}
+				</div>
+				{onEnabledChange !== undefined && (
+					<Tooltip
+						label={
+							registrationError && !enabled
+								? "Try enabling (may fail if conflict still exists)"
+								: enabled
+									? "Disable this hotkey"
+									: "Enable this hotkey"
+						}
+						position="left"
+						withArrow
+					>
+						<Switch
+							checked={enabled ?? true}
+							onChange={(e) => onEnabledChange(e.currentTarget.checked)}
+							disabled={toggleDisabled}
+							size="md"
+						/>
+					</Tooltip>
+				)}
+			</div>
 			<button
 				type="button"
 				onClick={handleClick}

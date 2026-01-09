@@ -1,8 +1,9 @@
 use crate::settings::HotkeyConfig;
-use tauri::AppHandle;
+use crate::state::{AppState, ShortcutErrors, ShortcutRegistrationResult};
+use tauri::{AppHandle, Manager};
 
 #[cfg(desktop)]
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 #[cfg(desktop)]
 use tauri_plugin_store::StoreExt;
@@ -43,59 +44,62 @@ fn get_setting_from_store<T: serde::de::DeserializeOwned>(
 
 /// Re-register global shortcuts with the current settings from the store.
 /// Called from frontend after hotkey settings are changed.
-/// Falls back to defaults if stored values are invalid.
 #[cfg(desktop)]
 #[tauri::command]
-pub async fn register_shortcuts(app: AppHandle) -> Result<(), String> {
-    // Read hotkeys from store with defaults
-    let toggle_hotkey: HotkeyConfig =
-        get_setting_from_store(&app, "toggle_hotkey", HotkeyConfig::default_toggle());
-    let hold_hotkey: HotkeyConfig =
-        get_setting_from_store(&app, "hold_hotkey", HotkeyConfig::default_hold());
-    let paste_last_hotkey: HotkeyConfig = get_setting_from_store(
-        &app,
-        "paste_last_hotkey",
-        HotkeyConfig::default_paste_last(),
-    );
+pub async fn register_shortcuts(app: AppHandle) -> Result<ShortcutRegistrationResult, String> {
+    Ok(crate::do_register_shortcuts(&app))
+}
 
-    // Convert to shortcuts with validation (fall back to defaults if invalid)
-    let toggle_shortcut = toggle_hotkey.to_shortcut_or_default(HotkeyConfig::default_toggle);
-    let hold_shortcut = hold_hotkey.to_shortcut_or_default(HotkeyConfig::default_hold);
-    let paste_last_shortcut =
-        paste_last_hotkey.to_shortcut_or_default(HotkeyConfig::default_paste_last);
+// Stub for non-desktop platforms
+#[cfg(not(desktop))]
+#[tauri::command]
+pub async fn register_shortcuts(_app: AppHandle) -> Result<ShortcutRegistrationResult, String> {
+    Ok(ShortcutRegistrationResult {
+        toggle_registered: true,
+        hold_registered: true,
+        paste_last_registered: true,
+        errors: ShortcutErrors::default(),
+    })
+}
 
-    log::info!(
-        "Re-registering shortcuts - Toggle: {}, Hold: {}, PasteLast: {}",
-        toggle_hotkey.to_shortcut_string(),
-        hold_hotkey.to_shortcut_string(),
-        paste_last_hotkey.to_shortcut_string()
-    );
+/// Get the current shortcut registration errors
+#[tauri::command]
+pub fn get_shortcut_errors(app: AppHandle) -> ShortcutErrors {
+    app.try_state::<AppState>()
+        .and_then(|state| state.shortcut_errors.read().ok().map(|e| e.clone()))
+        .unwrap_or_default()
+}
 
-    // Get the global shortcut manager
-    let shortcut_manager = app.global_shortcut();
+/// Set a hotkey's enabled state
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn set_hotkey_enabled(
+    app: AppHandle,
+    hotkey_type: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let (store_key, default_hotkey) = match hotkey_type.as_str() {
+        "toggle" => ("toggle_hotkey", HotkeyConfig::default_toggle()),
+        "hold" => ("hold_hotkey", HotkeyConfig::default_hold()),
+        "paste_last" => ("paste_last_hotkey", HotkeyConfig::default_paste_last()),
+        _ => return Err(format!("Unknown hotkey type: {}", hotkey_type)),
+    };
 
-    // Unregister all existing shortcuts
-    shortcut_manager
-        .unregister_all()
-        .map_err(|e| format!("Failed to unregister shortcuts: {}", e))?;
+    let mut hotkey: HotkeyConfig = get_setting_from_store(&app, store_key, default_hotkey);
+    hotkey.enabled = enabled;
 
-    // Collect shortcuts to register
-    let shortcuts: Vec<Shortcut> = vec![toggle_shortcut, hold_shortcut, paste_last_shortcut];
-
-    // Register new shortcuts with handler
-    shortcut_manager
-        .on_shortcuts(shortcuts, |app, shortcut, event| {
-            crate::handle_shortcut_event(app, shortcut, &event);
-        })
-        .map_err(|e| format!("Failed to register shortcuts: {}", e))?;
-
-    log::info!("Shortcuts re-registered successfully");
+    crate::save_setting_to_store(&app, store_key, &hotkey)?;
+    log::info!("Set {} hotkey enabled: {}", hotkey_type, enabled);
     Ok(())
 }
 
 // Stub for non-desktop platforms
 #[cfg(not(desktop))]
 #[tauri::command]
-pub async fn register_shortcuts(_app: AppHandle) -> Result<(), String> {
+pub async fn set_hotkey_enabled(
+    _app: AppHandle,
+    _hotkey_type: String,
+    _enabled: bool,
+) -> Result<(), String> {
     Ok(())
 }

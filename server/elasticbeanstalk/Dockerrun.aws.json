@@ -1,0 +1,13 @@
+{
+  "AWSEBDockerrunVersion": "1",
+  "Image": {
+    "Name": "<YOUR_ECR_URI>:latest",
+    "Update": "true"
+  },
+  "Ports": [
+    {
+      "ContainerPort": 8765,
+      "HostPort": 8765
+    }
+  ]
+}

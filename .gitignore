@@ -44,3 +44,5 @@ htmlcov/
 # Type checking
 .mypy_cache/
 .pytype/
+
+**/*.zip

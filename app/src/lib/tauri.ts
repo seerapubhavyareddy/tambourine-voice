@@ -144,13 +144,18 @@ export const KNOWN_SETTINGS = [
 	"stt-timeout",
 ] as const;
 
-export type { ConfigResponse, ConnectionState } from "./events";
+export type {
+	ConfigResponse,
+	ConnectionState,
+	LLMErrorPayload,
+} from "./events";
 
 import {
 	AppEvents,
 	type ConfigResponse,
 	type ConnectionState,
 	emitEvent,
+	type LLMErrorPayload,
 	listenEvent,
 } from "./events";
 
@@ -489,6 +494,17 @@ export const tauriAPI = {
 		callback: (response: ConfigResponse) => void,
 	): Promise<UnlistenFn> {
 		return listenEvent(AppEvents.configResponse, callback);
+	},
+
+	// LLM error notifications (overlay -> main)
+	async emitLLMError(error: LLMErrorPayload): Promise<void> {
+		return emitEvent(AppEvents.llmError, error);
+	},
+
+	async onLLMError(
+		callback: (error: LLMErrorPayload) => void,
+	): Promise<UnlistenFn> {
+		return listenEvent(AppEvents.llmError, callback);
 	},
 
 	// Server connection state management (for Rust-side config syncing)

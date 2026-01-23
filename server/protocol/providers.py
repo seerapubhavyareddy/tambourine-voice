@@ -26,28 +26,28 @@ class KnownSTTProvider(BaseModel):
     """Known STT provider from the enum."""
 
     mode: Literal["known"]
-    provider_id: STTProviderId
+    provider_id: STTProviderId = Field(validation_alias="providerId")
 
 
 class OtherSTTProvider(BaseModel):
     """Unknown STT provider (forward compatibility)."""
 
     mode: Literal["other"]
-    provider_id: str
+    provider_id: str = Field(validation_alias="providerId")
 
 
 class KnownLLMProvider(BaseModel):
     """Known LLM provider from the enum."""
 
     mode: Literal["known"]
-    provider_id: LLMProviderId
+    provider_id: LLMProviderId = Field(validation_alias="providerId")
 
 
 class OtherLLMProvider(BaseModel):
     """Unknown LLM provider (forward compatibility)."""
 
     mode: Literal["other"]
-    provider_id: str
+    provider_id: str = Field(validation_alias="providerId")
 
 
 STTProviderSelection = Annotated[

@@ -41,6 +41,9 @@ export const AppEvents = {
 
 	// Rust → All: History changed
 	historyChanged: "history-changed",
+
+	// Overlay → Main: LLM error notification
+	llmError: "llm-error",
 } as const;
 
 // =============================================================================
@@ -67,6 +70,11 @@ export type ConfigResponse =
 			error: string;
 	  };
 
+export interface LLMErrorPayload {
+	message: string; // Full error message for toast
+	fatal: boolean;
+}
+
 export interface EventPayloads {
 	[AppEvents.recordingStart]: undefined;
 	[AppEvents.recordingStop]: undefined;
@@ -79,6 +87,7 @@ export interface EventPayloads {
 	[AppEvents.reconnectStarted]: undefined;
 	[AppEvents.reconnectResult]: { success: boolean; error?: string };
 	[AppEvents.historyChanged]: undefined;
+	[AppEvents.llmError]: LLMErrorPayload;
 }
 
 // =============================================================================

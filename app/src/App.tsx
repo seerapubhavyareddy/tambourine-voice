@@ -25,6 +25,7 @@ import {
 	type AvailableProvidersData,
 	type ConfigResponse,
 	type HotkeyConfig,
+	type LLMErrorPayload,
 	tauriAPI,
 } from "./lib/tauri";
 import { useRecordingStore } from "./stores/recordingStore";
@@ -372,6 +373,34 @@ export default function App() {
 			unlisten?.();
 		};
 	}, [queryClient]);
+
+	// Listen for LLM errors from overlay and show detailed toast
+	useEffect(() => {
+		let isMounted = true;
+		let unlisten: (() => void) | undefined;
+
+		const handleLLMError = (error: LLMErrorPayload) => {
+			notifications.show({
+				title: error.fatal ? "Connection Error" : "Processing Error",
+				message: error.message,
+				color: "red",
+				autoClose: 5000,
+			});
+		};
+
+		tauriAPI.onLLMError(handleLLMError).then((fn) => {
+			if (isMounted) {
+				unlisten = fn;
+			} else {
+				fn();
+			}
+		});
+
+		return () => {
+			isMounted = false;
+			unlisten?.();
+		};
+	}, []);
 
 	return (
 		<div className="app-layout">

@@ -15,6 +15,7 @@ import { ThemeProvider, UserAudioComponent } from "@pipecat-ai/voice-ui-kit";
 import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { useDrag } from "@use-gesture/react";
+import { AlertCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { match } from "ts-pattern";
 import { z } from "zod";
@@ -171,6 +172,51 @@ const InitialLoadingSpinner = (
 	</div>
 );
 
+// Simple error indicator - detailed error goes to main window toast
+// Click to dismiss and start recording
+const ErrorDisplay = ({
+	onDismiss,
+	onStartRecording,
+}: {
+	onDismiss: () => void;
+	onStartRecording?: () => void;
+}) => (
+	<button
+		type="button"
+		onClick={() => {
+			onDismiss();
+			onStartRecording?.();
+		}}
+		style={{
+			minWidth: 48,
+			width: "fit-content",
+			minHeight: 48,
+			display: "flex",
+			flexDirection: "column",
+			alignItems: "center",
+			justifyContent: "center",
+			gap: 4,
+			cursor: "pointer",
+			padding: "4px 8px",
+			background: "none",
+			border: "none",
+		}}
+	>
+		<AlertCircle size={20} color="#f87171" />
+		<span
+			style={{
+				fontSize: 9,
+				color: "#fca5a5",
+				textAlign: "center",
+				lineHeight: 1.2,
+				whiteSpace: "nowrap",
+			}}
+		>
+			Try again
+		</span>
+	</button>
+);
+
 type DisplayState =
 	| "disconnected"
 	| "connecting"
@@ -238,9 +284,21 @@ function RecordingControl() {
 	const typeTextMutation = useTypeText();
 	const addHistoryEntry = useAddHistoryEntry();
 
+	// Error display state (persists until user records again)
+	const [showError, setShowError] = useState(false);
+
 	const { start: startResponseTimeout, clear: clearResponseTimeout } =
 		useTimeout(() => {
 			if (displayState === "processing") {
+				// Show simple error in overlay
+				setShowError(true);
+
+				// Send detailed error to main window
+				tauriAPI.emitLLMError({
+					message: "Response timed out - the server took too long to respond",
+					fatal: false,
+				});
+
 				send({ type: "RESPONSE_RECEIVED" });
 			}
 		}, SERVER_RESPONSE_TIMEOUT_MS);
@@ -262,6 +320,9 @@ function RecordingControl() {
 
 	// Handle start/stop recording from hotkeys
 	const onStartRecording = useCallback(async () => {
+		// Clear error state when starting recording
+		setShowError(false);
+
 		// Always show loading indicator during mic acquisition and recording start
 		// This ensures accurate UX feedback even when mic is pre-warmed
 		setIsMicAcquiring(true);
@@ -713,19 +774,36 @@ function RecordingControl() {
 			(error: unknown) => {
 				console.error("[Pipecat] Error:", error);
 
-				// Safely parse error payload to check for fatal errors
 				const parsed = RTVIErrorSchema.safeParse(error);
-				if (parsed.success && parsed.data.data?.fatal) {
-					console.warn(
-						"[Pipecat] Fatal error detected, triggering reconnection",
-					);
-					send({
-						type: "COMMUNICATION_ERROR",
-						error: parsed.data.data.message ?? "Fatal error",
+				if (parsed.success) {
+					const errorData = parsed.data.data;
+					const message = errorData?.message ?? "Unknown error";
+
+					// Show simple "Try again" in overlay
+					setShowError(true);
+
+					// Send detailed error to main window toast
+					tauriAPI.emitLLMError({
+						message,
+						fatal: errorData?.fatal ?? false,
 					});
+
+					// Return to idle if in processing state (error means no content coming)
+					if (displayState === "processing") {
+						clearResponseTimeout();
+						send({ type: "RESPONSE_RECEIVED" });
+					}
+
+					// Fatal errors also trigger reconnection after showing the error
+					if (errorData?.fatal) {
+						send({
+							type: "COMMUNICATION_ERROR",
+							error: message,
+						});
+					}
 				}
 			},
-			[send],
+			[send, displayState, clearResponseTimeout],
 		),
 	);
 
@@ -790,11 +868,18 @@ function RecordingControl() {
 				touchAction: "none",
 			}}
 		>
-			{displayState === "processing" ||
-			displayState === "disconnected" ||
-			displayState === "connecting" ||
-			displayState === "reconnecting" ||
-			isMicAcquiring ? (
+			{showError ? (
+				<ErrorDisplay
+					onDismiss={() => setShowError(false)}
+					onStartRecording={
+						displayState === "idle" ? onStartRecording : undefined
+					}
+				/>
+			) : displayState === "processing" ||
+				displayState === "disconnected" ||
+				displayState === "connecting" ||
+				displayState === "reconnecting" ||
+				isMicAcquiring ? (
 				LoadingSpinner
 			) : (
 				<UserAudioComponent

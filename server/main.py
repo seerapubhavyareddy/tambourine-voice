@@ -30,6 +30,8 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.service_switcher import ServiceSwitcher, ServiceSwitcherStrategyManual
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.frameworks.rtvi import RTVIObserver, RTVIProcessor
+from pipecat.services.llm_service import LLMService
+from pipecat.services.stt_service import STTService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.connection import IceServer, SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.request_handler import (
@@ -164,8 +166,8 @@ async def run_pipeline(
     webrtc_connection: SmallWebRTCConnection,
     services: AppServices,
     *,
-    stt_services: dict,
-    llm_services: dict,
+    stt_services: dict[STTProviderId, STTService],
+    llm_services: dict[LLMProviderId, LLMService],
     context_manager: DictationContextManager,
     turn_controller: TurnController,
 ) -> None:

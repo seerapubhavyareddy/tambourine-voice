@@ -1,6 +1,30 @@
+import { notifications } from "@mantine/notifications";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef } from "react";
+
+// =============================================================================
+// Notification Helpers
+// =============================================================================
+
+function showSettingsSuccess(message: string): void {
+	notifications.show({
+		title: "Settings Updated",
+		message,
+		color: "green",
+		autoClose: 2000,
+	});
+}
+
+function showSettingsError(message: string): void {
+	notifications.show({
+		title: "Settings Error",
+		message,
+		color: "red",
+		autoClose: 5000,
+	});
+}
+
 import {
 	type AvailableProvidersData,
 	type CleanupPromptSections,
@@ -69,49 +93,81 @@ export function useSettings() {
 
 type HotkeyType = "toggle" | "hold" | "paste_last";
 
-function createHotkeyUpdateHook(
+// Shared internal function for hotkey mutations
+async function executeHotkeyUpdate(
 	hotkeyType: HotkeyType,
 	updateFn: (hotkey: HotkeyConfig) => Promise<void>,
-) {
-	return function useUpdateHotkey() {
-		const queryClient = useQueryClient();
-		return useMutation({
-			mutationFn: async (hotkey: HotkeyConfig) => {
-				const settings = await tauriAPI.getSettings();
-				const error = validateHotkeyNotDuplicate(
-					hotkey,
-					{
-						toggle: settings.toggle_hotkey,
-						hold: settings.hold_hotkey,
-						paste_last: settings.paste_last_hotkey,
-					},
-					hotkeyType,
-				);
-				if (error) throw new Error(error);
+	hotkey: HotkeyConfig,
+): Promise<void> {
+	const settings = await tauriAPI.getSettings();
+	const error = validateHotkeyNotDuplicate(
+		hotkey,
+		{
+			toggle: settings.toggle_hotkey,
+			hold: settings.hold_hotkey,
+			paste_last: settings.paste_last_hotkey,
+		},
+		hotkeyType,
+	);
+	if (error) throw new Error(error);
 
-				await updateFn(hotkey);
-				await tauriAPI.registerShortcuts();
-			},
-			onSettled: () => {
-				queryClient.invalidateQueries({ queryKey: ["settings"] });
-				queryClient.refetchQueries({ queryKey: ["shortcutErrors"] });
-			},
-		});
-	};
+	await updateFn(hotkey);
+	await tauriAPI.registerShortcuts();
 }
 
-export const useUpdateToggleHotkey = createHotkeyUpdateHook(
-	"toggle",
-	tauriAPI.updateToggleHotkey,
-);
-export const useUpdateHoldHotkey = createHotkeyUpdateHook(
-	"hold",
-	tauriAPI.updateHoldHotkey,
-);
-export const useUpdatePasteLastHotkey = createHotkeyUpdateHook(
-	"paste_last",
-	tauriAPI.updatePasteLastHotkey,
-);
+export function useUpdateToggleHotkey() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: (hotkey: HotkeyConfig) =>
+			executeHotkeyUpdate("toggle", tauriAPI.updateToggleHotkey, hotkey),
+		onSuccess: () => {
+			showSettingsSuccess("Toggle hotkey updated successfully");
+		},
+		onError: (error) => {
+			showSettingsError(`Failed to update toggle hotkey: ${error.message}`);
+		},
+		onSettled: () => {
+			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			queryClient.refetchQueries({ queryKey: ["shortcutErrors"] });
+		},
+	});
+}
+
+export function useUpdateHoldHotkey() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: (hotkey: HotkeyConfig) =>
+			executeHotkeyUpdate("hold", tauriAPI.updateHoldHotkey, hotkey),
+		onSuccess: () => {
+			showSettingsSuccess("Hold hotkey updated successfully");
+		},
+		onError: (error) => {
+			showSettingsError(`Failed to update hold hotkey: ${error.message}`);
+		},
+		onSettled: () => {
+			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			queryClient.refetchQueries({ queryKey: ["shortcutErrors"] });
+		},
+	});
+}
+
+export function useUpdatePasteLastHotkey() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: (hotkey: HotkeyConfig) =>
+			executeHotkeyUpdate("paste_last", tauriAPI.updatePasteLastHotkey, hotkey),
+		onSuccess: () => {
+			showSettingsSuccess("Paste last hotkey updated successfully");
+		},
+		onError: (error) => {
+			showSettingsError(`Failed to update paste last hotkey: ${error.message}`);
+		},
+		onSettled: () => {
+			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			queryClient.refetchQueries({ queryKey: ["shortcutErrors"] });
+		},
+	});
+}
 
 export function useUpdateSelectedMic() {
 	const queryClient = useQueryClient();
@@ -120,6 +176,10 @@ export function useUpdateSelectedMic() {
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["settings"] });
 			tauriAPI.emitSettingsChanged();
+			showSettingsSuccess("Microphone selection updated successfully");
+		},
+		onError: (error) => {
+			showSettingsError(`Failed to update microphone: ${error.message}`);
 		},
 	});
 }
@@ -128,8 +188,12 @@ export function useUpdateSoundEnabled() {
 	const queryClient = useQueryClient();
 	return useMutation({
 		mutationFn: (enabled: boolean) => tauriAPI.updateSoundEnabled(enabled),
-		onSuccess: () => {
+		onSuccess: (_data, enabled) => {
 			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			showSettingsSuccess(`Sound feedback ${enabled ? "enabled" : "disabled"}`);
+		},
+		onError: (error) => {
+			showSettingsError(`Failed to update sound setting: ${error.message}`);
 		},
 	});
 }
@@ -138,8 +202,12 @@ export function useUpdateAutoMuteAudio() {
 	const queryClient = useQueryClient();
 	return useMutation({
 		mutationFn: (enabled: boolean) => tauriAPI.updateAutoMuteAudio(enabled),
-		onSuccess: () => {
+		onSuccess: (_data, enabled) => {
 			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			showSettingsSuccess(`Auto-mute ${enabled ? "enabled" : "disabled"}`);
+		},
+		onError: (error) => {
+			showSettingsError(`Failed to update auto-mute setting: ${error.message}`);
 		},
 	});
 }
@@ -159,6 +227,10 @@ export function useUpdateCleanupPromptSections() {
 			tauriAPI.updateCleanupPromptSections(sections),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			showSettingsSuccess("Formatting prompt updated successfully");
+		},
+		onError: (error) => {
+			showSettingsError(`Failed to update formatting prompt: ${error.message}`);
 		},
 	});
 }
@@ -173,9 +245,11 @@ export function useResetHotkeysToDefaults() {
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["settings"] });
 			queryClient.invalidateQueries({ queryKey: ["shortcutErrors"] });
+			showSettingsSuccess("Hotkeys reset to defaults");
 		},
 		onError: (error) => {
 			console.error("Reset hotkeys failed:", error);
+			showSettingsError(`Failed to reset hotkeys: ${error.message}`);
 		},
 	});
 }
@@ -187,6 +261,12 @@ export function useShortcutErrors() {
 		staleTime: 0, // Always refetch to get the latest errors
 	});
 }
+
+const HOTKEY_TYPE_LABELS = {
+	toggle: "Toggle",
+	hold: "Hold",
+	paste_last: "Paste last",
+} as const;
 
 export function useSetHotkeyEnabled() {
 	const queryClient = useQueryClient();
@@ -201,16 +281,22 @@ export function useSetHotkeyEnabled() {
 			await tauriAPI.setHotkeyEnabled(hotkeyType, enabled);
 			const result = await tauriAPI.registerShortcuts();
 
-			// If enabling failed, throw an error so the UI can show it
-			if (enabled) {
-				const errorKey = `${hotkeyType}_error` as keyof typeof result.errors;
-				const registeredKey = `${hotkeyType}_registered` as keyof typeof result;
-				if (!result[registeredKey] && result.errors[errorKey]) {
-					throw new Error(result.errors[errorKey] as string);
-				}
+			// Check for errors regardless of enabled state
+			const errorKey = `${hotkeyType}_error` as keyof typeof result.errors;
+			if (result.errors[errorKey]) {
+				throw new Error(result.errors[errorKey] as string);
 			}
 
-			return result;
+			return { result, hotkeyType, enabled };
+		},
+		onSuccess: ({ hotkeyType, enabled }) => {
+			const label = HOTKEY_TYPE_LABELS[hotkeyType];
+			showSettingsSuccess(
+				`${label} hotkey ${enabled ? "enabled" : "disabled"}`,
+			);
+		},
+		onError: (error) => {
+			showSettingsError(`Failed to update hotkey: ${error.message}`);
 		},
 		onSettled: () => {
 			// Always refetch after mutation completes (success or failure)
@@ -310,7 +396,6 @@ export function useAvailableProviders() {
 	});
 }
 
-// STT Timeout mutation (Rust syncs to server)
 export function useUpdateSTTTimeout() {
 	const queryClient = useQueryClient();
 	return useMutation({
@@ -318,6 +403,10 @@ export function useUpdateSTTTimeout() {
 			tauriAPI.updateSTTTimeout(timeoutSeconds),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			showSettingsSuccess("STT timeout updated successfully");
+		},
+		onError: (error) => {
+			showSettingsError(`Failed to update STT timeout: ${error.message}`);
 		},
 	});
 }
@@ -332,6 +421,10 @@ export function useUpdateServerUrl() {
 			queryClient.invalidateQueries({ queryKey: ["serverUrl"] });
 			// Notify other windows about settings change
 			tauriAPI.emitSettingsChanged();
+			showSettingsSuccess("Server URL updated successfully");
+		},
+		onError: (error) => {
+			showSettingsError(`Failed to update server URL: ${error.message}`);
 		},
 	});
 }
@@ -343,37 +436,53 @@ export function useUpdateServerUrl() {
 // implementing pessimistic updates: the UI shows a pending state until
 // the server confirms the change succeeded.
 
-/**
- * Mutation hook for switching LLM provider with server confirmation.
- * Wraps the event-based flow (main → overlay → server → overlay → main) in a Promise.
- */
+// Shared internal function for provider mutations
+async function executeProviderChange<TSelection>(
+	providerType: "llm" | "stt",
+	settingName: "llm-provider" | "stt-provider",
+	parseSelection: (value: unknown) => TSelection | null,
+	value: string,
+	signal?: AbortSignal,
+): Promise<TSelection> {
+	const { promise, resolve, reject } = Promise.withResolvers<TSelection>();
+
+	// Await listener registration BEFORE emitting to avoid race condition
+	const unlisten = await tauriAPI.onConfigResponse((response) => {
+		if (response.setting !== settingName) return;
+
+		unlisten();
+
+		if (response.type === "config-updated") {
+			const selection = parseSelection(response.value);
+			if (selection) resolve(selection);
+			else reject(new Error("Failed to parse server response"));
+		} else {
+			reject(new Error(response.error ?? "Provider change failed"));
+		}
+	});
+
+	// Clean up listener if aborted (e.g., component unmounts)
+	signal?.addEventListener("abort", () => {
+		unlisten();
+		reject(new DOMException("Aborted", "AbortError"));
+	});
+
+	tauriAPI.emitProviderChangeRequest({ providerType, value });
+
+	return promise;
+}
+
 export function useUpdateLLMProviderWithServer() {
 	const queryClient = useQueryClient();
-
 	return useMutation({
-		mutationFn: async (value: string) => {
-			const { promise, resolve, reject } =
-				Promise.withResolvers<ReturnType<typeof parseLLMProviderSelection>>();
-
-			// Await listener registration BEFORE emitting to avoid race condition
-			const unlisten = await tauriAPI.onConfigResponse((response) => {
-				if (response.setting !== "llm-provider") return;
-
-				unlisten();
-
-				if (response.type === "config-updated") {
-					const selection = parseLLMProviderSelection(response.value);
-					if (selection) resolve(selection);
-					else reject(new Error("Failed to parse server response"));
-				} else {
-					reject(new Error(response.error ?? "Provider change failed"));
-				}
-			});
-
-			tauriAPI.emitProviderChangeRequest({ providerType: "llm", value });
-
-			return promise;
-		},
+		mutationFn: ({ value, signal }: { value: string; signal?: AbortSignal }) =>
+			executeProviderChange(
+				"llm",
+				"llm-provider",
+				parseLLMProviderSelection,
+				value,
+				signal,
+			),
 		onSuccess: (selection) => {
 			if (!selection) return;
 			const providerId = getProviderIdFromSelection(selection);
@@ -383,37 +492,17 @@ export function useUpdateLLMProviderWithServer() {
 	});
 }
 
-/**
- * Mutation hook for switching STT provider with server confirmation.
- * Same pattern as useUpdateLLMProviderWithServer.
- */
 export function useUpdateSTTProviderWithServer() {
 	const queryClient = useQueryClient();
-
 	return useMutation({
-		mutationFn: async (value: string) => {
-			const { promise, resolve, reject } =
-				Promise.withResolvers<ReturnType<typeof parseSTTProviderSelection>>();
-
-			// Await listener registration BEFORE emitting to avoid race condition
-			const unlisten = await tauriAPI.onConfigResponse((response) => {
-				if (response.setting !== "stt-provider") return;
-
-				unlisten();
-
-				if (response.type === "config-updated") {
-					const selection = parseSTTProviderSelection(response.value);
-					if (selection) resolve(selection);
-					else reject(new Error("Failed to parse server response"));
-				} else {
-					reject(new Error(response.error ?? "Provider change failed"));
-				}
-			});
-
-			tauriAPI.emitProviderChangeRequest({ providerType: "stt", value });
-
-			return promise;
-		},
+		mutationFn: ({ value, signal }: { value: string; signal?: AbortSignal }) =>
+			executeProviderChange(
+				"stt",
+				"stt-provider",
+				parseSTTProviderSelection,
+				value,
+				signal,
+			),
 		onSuccess: (selection) => {
 			if (!selection) return;
 			const providerId = getProviderIdFromSelection(selection);

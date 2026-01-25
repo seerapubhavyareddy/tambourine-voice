@@ -1,6 +1,5 @@
-import { Badge, Box, Group, Loader, Select, Slider, Text } from "@mantine/core";
-import { Check, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Badge, Loader, Select, Slider, Text } from "@mantine/core";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
 	useAvailableProviders,
 	useSettings,
@@ -9,8 +8,17 @@ import {
 	useUpdateSTTTimeout,
 } from "../../lib/queries";
 import type { ProviderInfo } from "../../lib/tauri";
+import { StatusIndicator } from "./StatusIndicator";
 
 const DEFAULT_STT_TIMEOUT = 0.8;
+
+const selectInputStyles = {
+	input: {
+		backgroundColor: "var(--bg-elevated)",
+		borderColor: "var(--border-default)",
+		color: "var(--text-primary)",
+	},
+} as const;
 
 /** Select option format for Mantine Select */
 interface SelectOption {
@@ -56,23 +64,6 @@ function groupProvidersByType(
 	];
 }
 
-// React Query mutation status type
-type MutationStatus = "idle" | "pending" | "success" | "error";
-
-function StatusIndicator({ status }: { status: MutationStatus }) {
-	if (status === "idle") return null;
-
-	return (
-		<Box style={{ display: "inline-flex", alignItems: "center" }}>
-			{status === "pending" && <Loader size="xs" />}
-			{status === "success" && (
-				<Check size={16} color="var(--mantine-color-green-6)" />
-			)}
-			{status === "error" && <X size={16} color="var(--mantine-color-red-6)" />}
-		</Box>
-	);
-}
-
 function ProviderBadge({ isLocal }: { isLocal: boolean }) {
 	return (
 		<Badge size="xs" variant="light" color={isLocal ? "teal" : "blue"}>
@@ -88,7 +79,7 @@ export function ProvidersSettings() {
 
 	// Wait for settings (source of truth) and provider list (for options)
 	const isLoadingProviderData = isLoadingSettings || isLoadingProviders;
-	const updateSTTTimeout = useUpdateSTTTimeout();
+	const sttTimeoutMutation = useUpdateSTTTimeout();
 
 	// Provider mutations handle pessimistic updates automatically:
 	// - isPending: show spinner while waiting for server confirmation
@@ -98,19 +89,32 @@ export function ProvidersSettings() {
 	const sttMutation = useUpdateSTTProviderWithServer();
 	const llmMutation = useUpdateLLMProviderWithServer();
 
+	// AbortControllers for cleanup on unmount
+	const sttAbortControllerRef = useRef<AbortController | null>(null);
+	const llmAbortControllerRef = useRef<AbortController | null>(null);
+
+	useEffect(() => {
+		return () => {
+			// Clean up any pending mutations on unmount
+			sttAbortControllerRef.current?.abort();
+			llmAbortControllerRef.current?.abort();
+		};
+	}, []);
+
 	const handleSTTProviderChange = (value: string | null) => {
 		if (!value || sttMutation.isPending) return;
-		sttMutation.mutate(value);
+		sttAbortControllerRef.current = new AbortController();
+		sttMutation.mutate({ value, signal: sttAbortControllerRef.current.signal });
 	};
 
 	const handleLLMProviderChange = (value: string | null) => {
 		if (!value || llmMutation.isPending) return;
-		llmMutation.mutate(value);
+		llmAbortControllerRef.current = new AbortController();
+		llmMutation.mutate({ value, signal: llmAbortControllerRef.current.signal });
 	};
 
 	const handleSTTTimeoutChange = (value: number) => {
-		// Save to Tauri, which syncs to server
-		updateSTTTimeout.mutate(value);
+		sttTimeoutMutation.mutate(value);
 	};
 
 	// Get the current timeout value from settings, falling back to default
@@ -135,13 +139,13 @@ export function ProvidersSettings() {
 	);
 
 	// Get display value for dropdown:
-	// - During mutation: show what user selected (mutation.variables)
+	// - During mutation: show what user selected (mutation.variables.value)
 	// - Otherwise: show confirmed value from store
 	const sttDisplayValue = sttMutation.isPending
-		? sttMutation.variables
+		? sttMutation.variables?.value
 		: (settings?.stt_provider ?? "auto");
 	const llmDisplayValue = llmMutation.isPending
-		? llmMutation.variables
+		? llmMutation.variables?.value
 		: (settings?.llm_provider ?? "auto");
 
 	// Determine if currently selected provider is local (only show badge for non-auto providers)
@@ -162,83 +166,70 @@ export function ProvidersSettings() {
 			<div className="settings-card">
 				<div className="settings-row">
 					<div>
-						<p className="settings-label">Speech-to-Text (STT)</p>
+						<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+							<p className="settings-label">Speech-to-Text (STT)</p>
+							<StatusIndicator status={sttMutation.status} />
+						</div>
 						<p className="settings-description">
 							Service for transcribing audio
 						</p>
 					</div>
-					<Group gap="xs" align="center">
-						{isLoadingProviderData ? (
-							<Loader size="sm" color="gray" />
-						) : (
-							<>
-								<StatusIndicator status={sttMutation.status} />
-								<Select
-									data={sttProviderOptions}
-									value={sttDisplayValue}
-									onChange={handleSTTProviderChange}
-									placeholder="Select provider"
-									disabled={
-										sttMutation.isPending || !availableProviders?.stt.length
-									}
-									rightSection={
-										!isSttProviderAuto && settings?.stt_provider ? (
-											<ProviderBadge isLocal={isSttProviderLocal} />
-										) : undefined
-									}
-									rightSectionWidth={60}
-									styles={{
-										input: {
-											backgroundColor: "var(--bg-elevated)",
-											borderColor: "var(--border-default)",
-											color: "var(--text-primary)",
-										},
-									}}
-								/>
-							</>
-						)}
-					</Group>
+					{isLoadingProviderData ? (
+						<Loader size="sm" color="gray" />
+					) : (
+						<Select
+							data={sttProviderOptions}
+							value={sttDisplayValue}
+							onChange={handleSTTProviderChange}
+							placeholder="Select provider"
+							disabled={
+								sttMutation.isPending || !availableProviders?.stt.length
+							}
+							rightSection={
+								!isSttProviderAuto && settings?.stt_provider ? (
+									<ProviderBadge isLocal={isSttProviderLocal} />
+								) : undefined
+							}
+							rightSectionWidth={60}
+							styles={selectInputStyles}
+						/>
+					)}
 				</div>
 				<div className="settings-row" style={{ marginTop: 16 }}>
 					<div>
-						<p className="settings-label">Large Language Model (LLM)</p>
+						<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+							<p className="settings-label">Large Language Model (LLM)</p>
+							<StatusIndicator status={llmMutation.status} />
+						</div>
 						<p className="settings-description">Service for text formatting</p>
 					</div>
-					<Group gap="xs" align="center">
-						{isLoadingProviderData ? (
-							<Loader size="sm" color="gray" />
-						) : (
-							<>
-								<StatusIndicator status={llmMutation.status} />
-								<Select
-									data={llmProviderOptions}
-									value={llmDisplayValue}
-									onChange={handleLLMProviderChange}
-									placeholder="Select provider"
-									disabled={
-										llmMutation.isPending || !availableProviders?.llm.length
-									}
-									rightSection={
-										!isLlmProviderAuto && settings?.llm_provider ? (
-											<ProviderBadge isLocal={isLlmProviderLocal} />
-										) : undefined
-									}
-									rightSectionWidth={60}
-									styles={{
-										input: {
-											backgroundColor: "var(--bg-elevated)",
-											borderColor: "var(--border-default)",
-											color: "var(--text-primary)",
-										},
-									}}
-								/>
-							</>
-						)}
-					</Group>
+					{isLoadingProviderData ? (
+						<Loader size="sm" color="gray" />
+					) : (
+						<Select
+							data={llmProviderOptions}
+							value={llmDisplayValue}
+							onChange={handleLLMProviderChange}
+							placeholder="Select provider"
+							disabled={
+								llmMutation.isPending || !availableProviders?.llm.length
+							}
+							rightSection={
+								!isLlmProviderAuto && settings?.llm_provider ? (
+									<ProviderBadge isLocal={isLlmProviderLocal} />
+								) : undefined
+							}
+							rightSectionWidth={60}
+							styles={selectInputStyles}
+						/>
+					)}
 				</div>
 				<div className="settings-row" style={{ marginTop: 16 }}>
 					<div style={{ flex: 1 }}>
-						<p className="settings-label">STT Timeout</p>
+						<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+							<p className="settings-label">STT Timeout</p>
+							<StatusIndicator status={sttTimeoutMutation.status} />
+						</div>
 						<p className="settings-description">
 							Increase if nothing is getting transcribed
 						</p>
@@ -257,6 +248,7 @@ export function ProvidersSettings() {
 								min={0.5}
 								max={3.0}
 								step={0.1}
+								disabled={sttTimeoutMutation.isPending}
 								marks={[
 									{ value: 0.5, label: "0.5s" },
 									{ value: 3.0, label: "3.0s" },

@@ -627,6 +627,15 @@ export const connectionMachine = setup({
 					target: "initializing",
 					actions: assign({ retryCount: () => 0 }),
 				},
+				// Server URL changed - immediately reconnect with new URL
+				// No need for cleanupClient since it already runs on entry to retrying
+				SERVER_URL_CHANGED: {
+					target: "initializing",
+					actions: assign({
+						serverUrl: ({ event }) => event.serverUrl,
+						retryCount: () => 0,
+					}),
+				},
 			},
 		},
 	},

@@ -74,14 +74,15 @@ export function ConnectionProvider({ children }: ConnectionProviderProps) {
 			const unsubscribeFn = await tauriAPI.onSettingsChanged(async () => {
 				const newServerUrl = await tauriAPI.getServerUrl();
 				const currentState = connectionActor.getSnapshot();
-				const isConnected =
+				const shouldHandleUrlChange =
 					currentState.matches("idle") ||
 					currentState.matches("recording") ||
-					currentState.matches("processing");
+					currentState.matches("processing") ||
+					currentState.matches("retrying");
 				const serverUrlChanged =
 					newServerUrl && newServerUrl !== currentState.context.serverUrl;
 
-				if (isConnected && serverUrlChanged) {
+				if (shouldHandleUrlChange && serverUrlChanged) {
 					console.log("[XState] Server URL changed, reconnecting");
 					connectionActor.send({
 						type: "SERVER_URL_CHANGED",

@@ -622,6 +622,43 @@ describe("connectionMachine", () => {
 			actor.stop();
 			vi.useRealTimers();
 		});
+
+		it("updates serverUrl and resets retryCount on SERVER_URL_CHANGED event", async () => {
+			vi.useFakeTimers();
+
+			const { machine } = createTestMachine({
+				createClientBehavior: "error",
+			});
+			const actor = createActor(machine);
+			actor.start();
+
+			actor.send({ type: "CONNECT", serverUrl: "http://localhost:8000" });
+
+			// First failure puts us in retrying state
+			await vi.advanceTimersByTimeAsync(0);
+			expect(actor.getSnapshot().value).toBe("retrying");
+			expect(actor.getSnapshot().context.retryCount).toBe(1);
+
+			// Wait for another retry to increase count (proves reset is meaningful)
+			await vi.advanceTimersByTimeAsync(2000);
+			expect(actor.getSnapshot().context.retryCount).toBe(2);
+
+			// Change server URL while retrying
+			actor.send({
+				type: "SERVER_URL_CHANGED",
+				serverUrl: "http://newserver:9000",
+			});
+
+			// Should immediately transition to initializing with new URL and reset retryCount
+			expect(actor.getSnapshot().value).toBe("initializing");
+			expect(actor.getSnapshot().context.serverUrl).toBe(
+				"http://newserver:9000",
+			);
+			expect(actor.getSnapshot().context.retryCount).toBe(0);
+
+			actor.stop();
+			vi.useRealTimers();
+		});
 	});
 
 	describe("Delays: retryDelay (Exponential Backoff)", () => {

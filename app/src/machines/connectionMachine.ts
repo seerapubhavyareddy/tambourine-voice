@@ -1,6 +1,7 @@
 import { PipecatClient, RTVIEvent } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 import { match } from "ts-pattern";
+import { joinURL } from "ufo";
 import {
 	type ActorRefFrom,
 	type AnyEventObject,
@@ -172,7 +173,7 @@ const connectActor = fromCallback<
 	client
 		.connect({
 			webrtcRequestParams: {
-				endpoint: `${serverUrl}/api/offer`,
+				endpoint: joinURL(serverUrl, "api/offer"),
 				requestData: { clientUUID },
 			},
 		})

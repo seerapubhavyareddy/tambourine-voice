@@ -3,6 +3,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Store } from "@tauri-apps/plugin-store";
 import ky from "ky";
+import { withoutTrailingSlash } from "ufo";
 import { z } from "zod";
 
 // =============================================================================
@@ -767,7 +768,7 @@ export interface AvailableProvidersData {
 // Create ky instance with sensible defaults for API calls
 function createApiClient(serverUrl: string) {
 	return ky.create({
-		prefixUrl: serverUrl,
+		prefixUrl: withoutTrailingSlash(serverUrl),
 		timeout: 10000,
 		retry: {
 			limit: 2,

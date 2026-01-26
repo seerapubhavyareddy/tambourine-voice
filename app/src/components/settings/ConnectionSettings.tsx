@@ -1,8 +1,10 @@
 import { Button, Loader, TextInput } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
+import ky from "ky";
 import { Check, Copy, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { match } from "ts-pattern";
+import { joinURL } from "ufo";
 import { useSettings, useUpdateServerUrl } from "../../lib/queries";
 import {
 	type ConnectionState,
@@ -127,16 +129,11 @@ export function ConnectionSettings() {
 		setPingStatus("loading");
 
 		try {
-			const response = await fetch(`${urlToTest}/health`, {
-				method: "GET",
-				signal: AbortSignal.timeout(5000),
+			await ky.get(joinURL(urlToTest, "health"), {
+				timeout: 5000,
+				retry: 0,
 			});
-
-			if (response.ok) {
-				setPingStatus("success");
-			} else {
-				setPingStatus("error");
-			}
+			setPingStatus("success");
 		} catch {
 			setPingStatus("error");
 		}

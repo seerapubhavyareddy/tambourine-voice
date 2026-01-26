@@ -42,10 +42,10 @@ importers:
         specifier: ^2.9.1
         version: 2.9.1
       '@tauri-apps/plugin-dialog':
-        specifier: ^2.2.0
+        specifier: ^2.6.0
         version: 2.6.0
       '@tauri-apps/plugin-fs':
-        specifier: ^2.2.0
+        specifier: ^2.4.5
         version: 2.4.5
       '@tauri-apps/plugin-store':
         specifier: ^2.4.2
@@ -60,8 +60,8 @@ importers:
         specifier: ^4.1.0
         version: 4.1.0
       ky:
-        specifier: ^1.14.2
-        version: 1.14.2
+        specifier: ^1.14.3
+        version: 1.14.3
       lucide-react:
         specifier: ^0.563.0
         version: 0.563.0(react@19.2.3)
@@ -80,6 +80,9 @@ importers:
       ts-pattern:
         specifier: ^5.9.0
         version: 5.9.0
+      ufo:
+        specifier: ^1.6.3
+        version: 1.6.3
       xstate:
         specifier: ^5.25.1
         version: 5.25.1
@@ -1817,8 +1820,8 @@ packages:
       '@types/node': '>=18'
       typescript: '>=5.0.4 <7'
 
-  ky@1.14.2:
-    resolution: {integrity: sha512-q3RBbsO5A5zrPhB6CaCS8ZUv+NWCXv6JJT4Em0i264G9W0fdPB8YRfnnEi7Dm7X7omAkBIPojzYJ2D1oHTHqug==}
+  ky@1.14.3:
+    resolution: {integrity: sha512-9zy9lkjac+TR1c2tG+mkNSVlyOpInnWdSMiue4F+kq8TwJSgv6o8jhLRg8Ho6SnZ9wOYUq/yozts9qQCfk7bIw==}
     engines: {node: '>=18'}
 
   lightningcss-android-arm64@1.30.2:
@@ -2179,6 +2182,9 @@ packages:
     resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
     engines: {node: '>=14.17'}
     hasBin: true
+
+  ufo@1.6.3:
+    resolution: {integrity: sha512-yDJTmhydvl5lJzBmy/hyOAA0d+aqCBuwl818haVdYCRrWV84o7YyeVm4QlVHStqNrrJSTb6jKuFAVqAFsr+K3Q==}
 
   undici-types@7.16.0:
     resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
@@ -3896,7 +3902,7 @@ snapshots:
       typescript: 5.9.3
       zod: 4.3.6
 
-  ky@1.14.2: {}
+  ky@1.14.3: {}
 
   lightningcss-android-arm64@1.30.2:
     optional: true
@@ -4238,6 +4244,8 @@ snapshots:
       rxjs: 7.8.2
 
   typescript@5.9.3: {}
+
+  ufo@1.6.3: {}
 
   undici-types@7.16.0: {}
 

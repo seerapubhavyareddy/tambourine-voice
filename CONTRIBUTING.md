@@ -30,9 +30,19 @@ pnpm install   # Install dependencies
 pnpm dev       # Start Tauri app in dev mode
 ```
 
+### Install Git Hooks
+
+```bash
+# Install pre-commit (one-time)
+uv tool install pre-commit
+
+# Enable git hooks for this repository
+pre-commit install
+```
+
 ## Code Quality
 
-Pre-commit hooks automatically run linting, formatting, and type checking on commit. You can also run checks manually:
+After installing hooks, pre-commit will automatically run linting, formatting, and type checking on commit. You can also run checks manually:
 
 ### TypeScript (app/)
 

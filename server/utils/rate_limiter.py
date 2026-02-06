@@ -61,3 +61,6 @@ RATE_LIMIT_RUNTIME_CONFIG = "200/minute"
 
 # Providers endpoint: Allow frequent reads
 RATE_LIMIT_PROVIDERS = "200/minute"
+
+# Health endpoint: Allow frequent checks from orchestrators and load balancers
+RATE_LIMIT_HEALTH = "300/minute"

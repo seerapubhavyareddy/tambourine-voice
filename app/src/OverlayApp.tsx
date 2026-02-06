@@ -28,17 +28,9 @@ import {
 } from "./contexts/ConnectionContext";
 import { useNativeAudioTrack } from "./hooks/useNativeAudioTrack";
 import { useAddHistoryEntry, useSettings, useTypeText } from "./lib/queries";
-import {
-	type ConfigMessage,
-	safeSendClientMessage,
-	sendConfigMessages,
-} from "./lib/safeSendClientMessage";
-import {
-	KNOWN_SETTINGS,
-	tauriAPI,
-	toLLMProviderSelection,
-	toSTTProviderSelection,
-} from "./lib/tauri";
+import { safeSendClientMessage } from "./lib/safeSendClientMessage";
+import { KNOWN_SETTINGS, tauriAPI } from "./lib/tauri";
+import type { ConnectionMachineStateValue } from "./machines/connectionMachine";
 import "./overlay-global.css";
 
 const SERVER_RESPONSE_TIMEOUT_MS = 10_000;
@@ -202,25 +194,17 @@ type DisplayState =
 	| "recording"
 	| "processing";
 
-/**
- * Helper to convert XState state value to the ConnectionState string type
- * used by the UI and Tauri events.
- */
 function getDisplayState(
-	stateValue: string | Record<string, unknown>,
+	stateValue: ConnectionMachineStateValue,
 ): DisplayState {
-	// XState state values can be strings or objects (for nested states)
-	const state =
-		typeof stateValue === "string" ? stateValue : Object.keys(stateValue)[0];
-
-	return match(state)
+	return match(stateValue)
 		.with("disconnected", () => "disconnected" as const)
-		.with("initializing", "connecting", () => "connecting" as const)
+		.with("initializing", "connecting", "syncing", () => "connecting" as const)
 		.with("retrying", () => "reconnecting" as const)
 		.with("idle", () => "idle" as const)
 		.with("recording", () => "recording" as const)
 		.with("processing", () => "processing" as const)
-		.otherwise(() => "disconnected" as const);
+		.exhaustive();
 }
 
 function RecordingControl() {
@@ -566,53 +550,13 @@ function RecordingControl() {
 		return () => window.removeEventListener("beforeunload", handleBeforeUnload);
 	}, [client]);
 
-	// Build config messages from current settings (used for initial sync and change detection)
-	// Only provider switching uses RTVI - prompt sections and STT timeout use HTTP API
-	const buildConfigMessages = useCallback(
-		(
-			currentSettings: typeof settings,
-			prevSettings?: typeof settings,
-		): ConfigMessage[] => {
-			const messages: ConfigMessage[] = [];
-
-			const hasChanged = (key: keyof NonNullable<typeof settings>) => {
-				const current = currentSettings?.[key];
-				const prev = prevSettings?.[key];
-				if (current == null) return false;
-				if (prevSettings === undefined) return true; // Initial sync
-				return current !== prev;
-			};
-
-			if (hasChanged("stt_provider") && currentSettings?.stt_provider) {
-				messages.push({
-					type: "set-stt-provider",
-					data: {
-						provider: toSTTProviderSelection(currentSettings.stt_provider),
-					},
-				});
-			}
-			if (hasChanged("llm_provider") && currentSettings?.llm_provider) {
-				messages.push({
-					type: "set-llm-provider",
-					data: {
-						provider: toLLMProviderSelection(currentSettings.llm_provider),
-					},
-				});
-			}
-
-			return messages;
-		},
-		[],
-	);
-
 	// Track if initial settings sync has been done for this connection
 	const hasInitialSyncRef = useRef(false);
 
-	// Sync provider settings on initial connection (state transitions to 'idle')
-	// Provider switching uses RTVI (requires frame injection into pipeline)
+	// Notify Rust backend of connection/disconnection state changes
+	// Provider settings are synced via initialConfigSync actor in the connection machine
 	// Runtime provider changes are handled via onProviderChangeRequest event (pessimistic updates)
 	useEffect(() => {
-		// Only sync if connected (idle state)
 		if (!client || displayState !== "idle") {
 			// Reset initial sync flag and notify Rust when disconnected
 			if (
@@ -628,13 +572,11 @@ function RecordingControl() {
 			return;
 		}
 
-		// Initial sync after connection
-		// Now that we properly wait for "ready" state before transitioning to idle,
-		// we can send messages immediately without waiting
+		// Notify Rust of connection so it can sync settings via HTTP
+		// (prompt sections and STT timeout use the HTTP API, not RTVI)
 		if (!hasInitialSyncRef.current) {
 			hasInitialSyncRef.current = true;
 
-			// Notify Rust of connection so it can sync settings via HTTP
 			const notifyRust = async () => {
 				const serverUrl = await tauriAPI.getServerUrl();
 				const clientUUID = await tauriAPI.getClientUUID();
@@ -643,21 +585,8 @@ function RecordingControl() {
 				}
 			};
 			notifyRust();
-
-			// Error handler for communication failures during sync
-			const handleCommunicationError = (error: string) =>
-				send({ type: "COMMUNICATION_ERROR", error });
-
-			// Send provider settings via RTVI (requires frame injection)
-			const messages = buildConfigMessages(settings);
-			if (messages.length > 0) {
-				sendConfigMessages(client, messages, handleCommunicationError);
-			}
 		}
-
-		// Runtime provider changes are now handled via onProviderChangeRequest event
-		// (pessimistic updates - main window sends request, overlay sends to server)
-	}, [client, displayState, settings, buildConfigMessages, send]);
+	}, [client, displayState]);
 
 	// Listen to native UserTranscript event for raw transcription
 	// RTVIObserver emits these automatically as user speaks
@@ -822,11 +751,17 @@ function RecordingControl() {
 
 	// Click handler (toggle mode)
 	const handleClick = useCallback(() => {
-		if (displayState === "recording") {
-			onStopRecording();
-		} else if (displayState === "idle") {
-			onStartRecording();
-		}
+		match(displayState)
+			.with("recording", () => onStopRecording())
+			.with("idle", () => onStartRecording())
+			.with(
+				"disconnected",
+				"connecting",
+				"reconnecting",
+				"processing",
+				() => { },
+			)
+			.exhaustive();
 	}, [displayState, onStartRecording, onStopRecording]);
 
 	// Drag handler using @use-gesture/react
@@ -858,14 +793,20 @@ function RecordingControl() {
 	);
 
 	// Determine view state for render
-	const isLoadingState =
-		displayState === "processing" ||
-		displayState === "disconnected" ||
-		displayState === "connecting" ||
-		displayState === "reconnecting" ||
-		isMicAcquiring;
-
-	const viewState = showError ? "error" : isLoadingState ? "loading" : "active";
+	const viewState = showError
+		? ("error" as const)
+		: isMicAcquiring
+			? ("loading" as const)
+			: match(displayState)
+				.with(
+					"processing",
+					"disconnected",
+					"connecting",
+					"reconnecting",
+					() => "loading" as const,
+				)
+				.with("idle", "recording", () => "active" as const)
+				.exhaustive();
 
 	return (
 		<div

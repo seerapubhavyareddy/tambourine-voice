@@ -1,0 +1,45 @@
+name: welcome
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+  issues:
+    types:
+      - opened
+      - reopened
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  thank_first_time_contributors:
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event.pull_request.user.type || github.event.issue.user.type) != 'Bot'
+    steps:
+      - name: Welcome first-time contributors
+        uses: actions/first-interaction@v3
+        with:
+          pr_message: |
+            👋 Hi @${{ github.event.pull_request.user.login }} — thank you so much for your first contribution to Tambourine Voice!
+
+            If you have a minute, we would really appreciate your support:
+            - ⭐ Star the repo: https://github.com/kstonekuan/tambourine-voice
+            - 💬 Join our Discord: https://discord.gg/dUyuXWVJ2a
+            - 📣 Share the project with your network
+
+            We are excited to have you here and appreciate your help making the project better! 🙌
+          issue_message: |
+            👋 Hi @${{ github.event.issue.user.login }} — thank you for opening your first issue on Tambourine Voice!
+
+            We appreciate you taking the time to report this. Our team will take a look as soon as possible.
+
+            In the meantime, feel free to:
+            - ⭐ Star the repo: https://github.com/kstonekuan/tambourine-voice
+            - 💬 Join our Discord: https://discord.gg/dUyuXWVJ2a
+            - 📣 Share the project with your network
+
+            We are glad to have you here! 🙌

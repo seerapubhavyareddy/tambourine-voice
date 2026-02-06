@@ -2,7 +2,7 @@
 repos:
   # Python - Ruff
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.9
+    rev: v0.15.0
     hooks:
       - id: ruff-check
         args: [--fix]
@@ -10,7 +10,7 @@ repos:
 
   # Python - uv lockfile
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.9.18
+    rev: 0.9.30
     hooks:
       - id: uv-lock
         files: server/pyproject.toml

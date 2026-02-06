@@ -1,7 +1,7 @@
-//! macOS audio mute control implementation using CoreAudio.
+//! macOS audio mute control implementation using `CoreAudio`.
 //!
-//! Uses the CoreAudio framework to control the default audio output device's
-//! mute state via AudioObject property APIs.
+//! Uses the `CoreAudio` framework to control the default audio output device's
+//! mute state via `AudioObject` property APIs.
 
 use super::{AudioControlError, SystemAudioControl};
 use objc2_core_audio::{
@@ -13,7 +13,7 @@ use objc2_core_audio::{
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
-/// macOS audio controller using CoreAudio.
+/// macOS audio controller using `CoreAudio`.
 pub struct MacOSAudioController {
     device_id: u32,
 }
@@ -40,23 +40,22 @@ impl MacOSAudioController {
         };
 
         let mut device_id: u32 = 0;
-        let mut size = std::mem::size_of::<u32>() as u32;
+        let mut size = 4u32;
 
         let status = unsafe {
             AudioObjectGetPropertyData(
                 kAudioObjectSystemObject as u32,
-                NonNull::new(&address as *const _ as *mut _).unwrap(),
+                NonNull::new((&raw const address).cast_mut()).unwrap(),
                 0,
                 std::ptr::null(),
-                NonNull::new(&mut size as *mut _).unwrap(),
-                NonNull::new(&mut device_id as *mut _ as *mut c_void).unwrap(),
+                NonNull::new(&raw mut size).unwrap(),
+                NonNull::new((&raw mut device_id).cast::<c_void>()).unwrap(),
             )
         };
 
         if status != 0 {
             return Err(AudioControlError::InitializationFailed(format!(
-                "Failed to get default output device (OSStatus: {})",
-                status
+                "Failed to get default output device (OSStatus: {status})"
             )));
         }
 
@@ -78,23 +77,22 @@ impl MacOSAudioController {
         };
 
         let mut value: u32 = 0;
-        let mut size = std::mem::size_of::<u32>() as u32;
+        let mut size = 4u32;
 
         let status = unsafe {
             AudioObjectGetPropertyData(
                 self.device_id,
-                NonNull::new(&address as *const _ as *mut _).unwrap(),
+                NonNull::new((&raw const address).cast_mut()).unwrap(),
                 0,
                 std::ptr::null(),
-                NonNull::new(&mut size as *mut _).unwrap(),
-                NonNull::new(&mut value as *mut _ as *mut c_void).unwrap(),
+                NonNull::new(&raw mut size).unwrap(),
+                NonNull::new((&raw mut value).cast::<c_void>()).unwrap(),
             )
         };
 
         if status != 0 {
             return Err(AudioControlError::GetPropertyFailed(format!(
-                "OSStatus: {}",
-                status
+                "OSStatus: {status}"
             )));
         }
 
@@ -109,23 +107,22 @@ impl MacOSAudioController {
             mElement: kAudioObjectPropertyElementMain,
         };
 
-        let size = std::mem::size_of::<u32>() as u32;
+        let size = 4u32;
 
         let status = unsafe {
             AudioObjectSetPropertyData(
                 self.device_id,
-                NonNull::new(&address as *const _ as *mut _).unwrap(),
+                NonNull::new((&raw const address).cast_mut()).unwrap(),
                 0,
                 std::ptr::null(),
                 size,
-                NonNull::new(&value as *const _ as *mut c_void).unwrap(),
+                NonNull::new((&raw const value).cast_mut().cast::<c_void>()).unwrap(),
             )
         };
 
         if status != 0 {
             return Err(AudioControlError::SetPropertyFailed(format!(
-                "OSStatus: {}",
-                status
+                "OSStatus: {status}"
             )));
         }
 
@@ -140,6 +137,6 @@ impl SystemAudioControl for MacOSAudioController {
     }
 
     fn set_muted(&self, muted: bool) -> Result<(), AudioControlError> {
-        self.set_u32_property(kAudioDevicePropertyMute, if muted { 1 } else { 0 })
+        self.set_u32_property(kAudioDevicePropertyMute, u32::from(muted))
     }
 }

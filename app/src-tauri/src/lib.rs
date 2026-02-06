@@ -526,7 +526,7 @@ pub fn run() {
                         log::info!("[NSPanel] Successfully converted overlay to NSPanel");
                     }
                     Err(e) => {
-                        log::error!("[NSPanel] Failed to convert overlay to NSPanel: {:?}", e);
+                        log::error!("[NSPanel] Failed to convert overlay to NSPanel: {e:?}");
                     }
                 }
             }

@@ -408,7 +408,7 @@ app.include_router(config_router)
 
 @app.get("/health")
 @limiter.limit(RATE_LIMIT_HEALTH, key_func=get_ip_only)
-async def health_check() -> dict[str, str]:
+async def health_check(request: Request) -> dict[str, str]:
     """Health check endpoint for container orchestration (e.g., Lightsail)."""
     return {"status": "ok"}
 

@@ -9,6 +9,7 @@
  */
 
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { ActiveAppContextSnapshot } from "./activeAppContext";
 
 // =============================================================================
 // Event Names - Must match src-tauri/src/events.rs
@@ -47,6 +48,9 @@ export const AppEvents = {
 
 	// Main → Overlay: Provider change request (pessimistic updates)
 	providerChangeRequest: "provider-change-request",
+
+	// Rust → All: Active app context updates
+	activeAppContextChanged: "active-app-context-changed",
 } as const;
 
 // =============================================================================
@@ -62,12 +66,27 @@ export type ConnectionState =
 	| "processing";
 
 /**
+ * Known config setting names.
+ * Unknown strings are still allowed for forward compatibility.
+ */
+export const KNOWN_CONFIG_SETTING_NAMES = [
+	"stt-provider",
+	"llm-provider",
+	"prompt-sections",
+	"stt-timeout",
+] as const;
+
+export type KnownConfigSettingName =
+	(typeof KNOWN_CONFIG_SETTING_NAMES)[number];
+export type ConfigSettingName = KnownConfigSettingName | (string & {});
+
+/**
  * Config response for successful updates.
  * Value is parsed at runtime using Zod schemas in tauri.ts.
  */
 export type ConfigUpdatedResponse = {
 	type: "config-updated";
-	setting: string;
+	setting: ConfigSettingName;
 	value: unknown;
 };
 
@@ -76,7 +95,7 @@ export type ConfigUpdatedResponse = {
  */
 export type ConfigErrorResponse = {
 	type: "config-error";
-	setting: string;
+	setting: ConfigSettingName;
 	error: string;
 };
 
@@ -106,6 +125,7 @@ export interface EventPayloads {
 	[AppEvents.historyChanged]: undefined;
 	[AppEvents.llmError]: LLMErrorPayload;
 	[AppEvents.providerChangeRequest]: ProviderChangeRequestPayload;
+	[AppEvents.activeAppContextChanged]: ActiveAppContextSnapshot;
 }
 
 // =============================================================================
@@ -127,11 +147,9 @@ export function emitEvent<K extends keyof EventPayloads>(
  */
 export function listenEvent<K extends keyof EventPayloads>(
 	event: K,
-	callback: EventPayloads[K] extends undefined
-		? () => void
-		: (payload: EventPayloads[K]) => void,
+	callback: (payload: EventPayloads[K]) => void,
 ): Promise<UnlistenFn> {
-	return listen<EventPayloads[K]>(event, (e) => {
-		(callback as (payload: EventPayloads[K]) => void)(e.payload);
-	});
+	return listen<EventPayloads[K]>(event, (eventPayload) =>
+		callback(eventPayload.payload),
+	);
 }

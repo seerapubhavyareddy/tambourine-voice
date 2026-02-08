@@ -10,11 +10,12 @@ Message flow:
 - Server → Client: ServerMessage (via RTVIServerMessageFrame)
 """
 
+from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from loguru import logger
-from pydantic import BaseModel, Field, RootModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, RootModel, ValidationError, field_validator
 
 from protocol.providers import LLMProviderSelection, STTProviderSelection
 
@@ -33,18 +34,109 @@ class SettingName(StrEnum):
 
 
 # =============================================================================
+# Active App Context Types (Client -> Server)
+# =============================================================================
+
+
+class FocusEventSource(StrEnum):
+    """Source of active app context data."""
+
+    POLLING = "polling"
+    ACCESSIBILITY = "accessibility"
+    UIA = "uia"
+    UNKNOWN = "unknown"
+
+
+class FocusConfidenceLevel(StrEnum):
+    """Confidence level of active app context data."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class FocusedApplication(BaseModel):
+    """Focused application details."""
+
+    display_name: str
+    bundle_id: str | None = None
+    process_path: str | None = None
+
+
+class FocusedWindow(BaseModel):
+    """Focused window details."""
+
+    title: str
+
+
+class FocusedBrowserTab(BaseModel):
+    """Focused browser tab details (best-effort)."""
+
+    title: str | None = None
+    origin: str | None = None
+    browser: str | None = None
+
+
+class ActiveAppContextSnapshot(BaseModel):
+    """Snapshot of current active app context."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    focused_application: FocusedApplication | None = None
+    focused_window: FocusedWindow | None = None
+    focused_browser_tab: FocusedBrowserTab | None = None
+    event_source: FocusEventSource = FocusEventSource.UNKNOWN
+    confidence_level: FocusConfidenceLevel = FocusConfidenceLevel.LOW
+    captured_at: str
+
+
+# =============================================================================
 # Client Messages - Recording
 # =============================================================================
+
+
+class StartRecordingData(BaseModel):
+    """Optional data payload for start-recording message."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    active_app_context: ActiveAppContextSnapshot | None = None
+
+    @field_validator("active_app_context", mode="before")
+    @classmethod
+    def parse_active_app_context_or_clear(
+        cls,
+        raw_active_app_context: object,
+    ) -> ActiveAppContextSnapshot | None:
+        """Treat malformed optional active app context as absent metadata."""
+        if raw_active_app_context is None:
+            return None
+        if isinstance(raw_active_app_context, ActiveAppContextSnapshot):
+            return raw_active_app_context
+        if not isinstance(raw_active_app_context, Mapping):
+            logger.debug("Ignoring non-mapping active_app_context payload")
+            return None
+        try:
+            return ActiveAppContextSnapshot.model_validate(raw_active_app_context)
+        except ValidationError:
+            logger.debug("Ignoring malformed active_app_context payload")
+            return None
 
 
 class StartRecordingMessage(BaseModel):
     """Client request to start recording audio.
 
-    This is a simple marker message with no data payload.
     LLM formatting is controlled globally via the /api/config/llm-formatting endpoint.
     """
 
     type: Literal["start-recording"]
+    data: StartRecordingData | None = None
+
+    def active_app_context_for_recording(self) -> ActiveAppContextSnapshot | None:
+        """Return active app context for this recording, or None to explicitly clear it."""
+        if self.data is None:
+            return None
+        return self.data.active_app_context
 
 
 class StopRecordingMessage(BaseModel):
@@ -125,10 +217,47 @@ class UnknownClientMessage(BaseModel):
     """
 
     type: str  # The actual unknown type string
-    raw: dict[str, Any]  # Full original message for debugging
+    raw: dict[str, object]  # Full original message for debugging
 
 
-def parse_client_message(raw: dict[str, Any]) -> _ClientMessageUnion | UnknownClientMessage:
+class RTVIClientMessageEnvelope(BaseModel):
+    """Raw RTVI client message envelope.
+
+    Validates message shape from object attributes to avoid untyped attribute access
+    in event callbacks.
+    """
+
+    model_config = ConfigDict(extra="ignore", from_attributes=True)
+
+    type: str
+    data: object | None = None
+
+    def to_client_message_payload(self) -> dict[str, object]:
+        """Normalize envelope fields into parser-ready payload."""
+        normalized_data = (
+            {str(key): value for key, value in self.data.items()}
+            if isinstance(self.data, Mapping)
+            else {}
+        )
+        return {
+            "type": self.type,
+            "data": normalized_data,
+        }
+
+
+def parse_rtvi_client_message_payload(raw_message: object) -> dict[str, object] | None:
+    """Parse a raw RTVI message object into a normalized payload.
+
+    Returns None for invalid envelope shapes.
+    """
+    try:
+        envelope = RTVIClientMessageEnvelope.model_validate(raw_message)
+    except ValidationError:
+        return None
+    return envelope.to_client_message_payload()
+
+
+def parse_client_message(raw: Mapping[str, object]) -> _ClientMessageUnion | UnknownClientMessage:
     """Parse client message with forward compatibility.
 
     Returns UnknownClientMessage for unknown types (never None).
@@ -139,8 +268,10 @@ def parse_client_message(raw: dict[str, Any]) -> _ClientMessageUnion | UnknownCl
         wrapper = ClientMessage.model_validate(raw)
         return wrapper.root  # Return the actual message, not the wrapper
     except ValidationError:
-        logger.debug(f"Unknown client message type: {raw.get('type')}")
-        return UnknownClientMessage(type=raw.get("type", ""), raw=raw)
+        raw_message_type = raw.get("type")
+        unknown_message_type = raw_message_type if isinstance(raw_message_type, str) else ""
+        logger.debug(f"Unknown client message type: {unknown_message_type}")
+        return UnknownClientMessage(type=unknown_message_type, raw=dict(raw))
 
 
 # =============================================================================
@@ -171,7 +302,7 @@ class ConfigUpdatedMessage(BaseModel):
 
     type: Literal["config-updated"] = "config-updated"
     setting: SettingName
-    value: Any
+    value: STTProviderSelection | LLMProviderSelection
     success: Literal[True] = True
 
 

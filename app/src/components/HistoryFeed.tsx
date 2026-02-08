@@ -30,6 +30,13 @@ function formatDate(timestamp: string): string {
 	return format(date, "MMM d");
 }
 
+function normalizeMeaningfulContextValue(
+	rawContextValue: string | null | undefined,
+): string | null {
+	const trimmedContextValue = rawContextValue?.trim();
+	return trimmedContextValue ? trimmedContextValue : null;
+}
+
 interface GroupedHistory {
 	date: string;
 	items: HistoryEntry[];
@@ -64,6 +71,33 @@ const HistoryItem = memo(function HistoryItem({
 	isDeleting,
 }: HistoryItemProps) {
 	const [isExpanded, setIsExpanded] = useState(false);
+	const activeAppContextSnapshot = entry.active_app_context;
+	const activeAppContextFields = [
+		{
+			label: "App",
+			value: normalizeMeaningfulContextValue(
+				activeAppContextSnapshot?.focused_application?.display_name,
+			),
+		},
+		{
+			label: "Window",
+			value: normalizeMeaningfulContextValue(
+				activeAppContextSnapshot?.focused_window?.title,
+			),
+		},
+		{
+			label: "Tab",
+			value: normalizeMeaningfulContextValue(
+				activeAppContextSnapshot?.focused_browser_tab?.title,
+			),
+		},
+		{
+			label: "Origin",
+			value: normalizeMeaningfulContextValue(
+				activeAppContextSnapshot?.focused_browser_tab?.origin,
+			),
+		},
+	].filter((activeAppContextField) => activeAppContextField.value !== null);
 
 	return (
 		<div className="history-item">
@@ -72,12 +106,32 @@ const HistoryItem = memo(function HistoryItem({
 				<p className="history-text">{entry.text}</p>
 				{isExpanded && (
 					<div className="history-raw-text">
-						<Text size="xs" c="dimmed" fw={500} mb={4}>
+						<Text className="history-details-heading" mb={4}>
 							Raw transcription:
 						</Text>
-						<Text size="sm" c="dimmed">
-							{entry.raw_text}
-						</Text>
+						<Text className="history-details-content">{entry.raw_text}</Text>
+
+						{activeAppContextSnapshot && (
+							<>
+								<Text className="history-details-heading" mt={12} mb={4}>
+									Active app context:
+								</Text>
+								{activeAppContextFields.length > 0 ? (
+									<div className="history-context-grid">
+										{activeAppContextFields.map(({ label, value }) => (
+											<div key={label} className="history-context-row">
+												<Text className="history-context-label">{label}</Text>
+												<Text className="history-context-value">{value}</Text>
+											</div>
+										))}
+									</div>
+								) : (
+									<Text className="history-details-content">
+										No active app details were available for this dictation.
+									</Text>
+								)}
+							</>
+						)}
 					</div>
 				)}
 			</div>
@@ -105,9 +159,9 @@ const HistoryItem = memo(function HistoryItem({
 							leftSection={
 								isExpanded ? <EyeOff size={14} /> : <Eye size={14} />
 							}
-							onClick={() => setIsExpanded(!isExpanded)}
+							onClick={() => setIsExpanded((currentState) => !currentState)}
 						>
-							{isExpanded ? "Hide" : "View"} raw transcript
+							{isExpanded ? "Hide" : "View"} details
 						</Menu.Item>
 						<Menu.Divider />
 						<Menu.Item

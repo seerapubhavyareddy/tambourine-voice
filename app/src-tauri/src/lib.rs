@@ -1,3 +1,4 @@
+use anyhow::Context;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -5,6 +6,7 @@ use tauri::{
 };
 use tauri_utils::config::BackgroundThrottlingPolicy;
 
+mod active_app_context;
 mod audio;
 mod audio_mute;
 mod commands;
@@ -12,6 +14,7 @@ mod config_sync;
 pub mod events;
 mod history;
 
+use active_app_context::get_current_active_app_context;
 use events::EventName;
 mod mic_capture;
 mod settings;
@@ -23,7 +26,7 @@ mod tests;
 use audio_mute::AudioMuteManager;
 use history::HistoryStorage;
 use mic_capture::{AudioDeviceInfo, MicCapture, MicCaptureManager};
-use settings::{HotkeyConfig, HotkeyType, StoreKey};
+use settings::{HotkeyConfig, HotkeyType, LocalOnlySetting, SettingClass};
 use state::{AppState, ShortcutState};
 
 #[cfg(desktop)]
@@ -103,13 +106,19 @@ fn get_normalized_shortcut_string(
 /// Match a shortcut string against configured hotkeys
 #[cfg(desktop)]
 fn match_hotkey(app: &AppHandle, shortcut_str: &str) -> Option<HotkeyType> {
-    let toggle_hotkey: HotkeyConfig =
-        get_setting_from_store(app, StoreKey::ToggleHotkey, HotkeyConfig::default_toggle());
-    let hold_hotkey: HotkeyConfig =
-        get_setting_from_store(app, StoreKey::HoldHotkey, HotkeyConfig::default_hold());
+    let toggle_hotkey: HotkeyConfig = get_setting_from_store(
+        app,
+        LocalOnlySetting::ToggleHotkey,
+        HotkeyConfig::default_toggle(),
+    );
+    let hold_hotkey: HotkeyConfig = get_setting_from_store(
+        app,
+        LocalOnlySetting::HoldHotkey,
+        HotkeyConfig::default_hold(),
+    );
     let paste_last_hotkey: HotkeyConfig = get_setting_from_store(
         app,
-        StoreKey::PasteLastHotkey,
+        LocalOnlySetting::PasteLastHotkey,
         HotkeyConfig::default_paste_last(),
     );
 
@@ -133,17 +142,19 @@ fn match_hotkey(app: &AppHandle, shortcut_str: &str) -> Option<HotkeyType> {
 #[cfg(desktop)]
 pub(crate) fn save_setting_to_store<T: serde::Serialize>(
     app: &AppHandle,
-    key: StoreKey,
+    setting_class: SettingClass,
     value: &T,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
+    let storage_key_name = setting_class.storage_key_name();
     let store = app
         .store("settings.json")
-        .map_err(|e| format!("Failed to get store: {e}"))?;
-    let json_value = serde_json::to_value(value).map_err(|e| e.to_string())?;
-    store.set(key.as_str(), json_value); // set() returns ()
+        .with_context(|| format!("Failed to get settings store for '{storage_key_name}'"))?;
+    let json_value = serde_json::to_value(value)
+        .with_context(|| format!("Failed to serialize setting value for '{storage_key_name}'"))?;
+    store.set(storage_key_name, json_value); // set() returns ()
     store
         .save()
-        .map_err(|e| format!("Failed to save store: {e}"))?;
+        .with_context(|| format!("Failed to save settings store for '{storage_key_name}'"))?;
     Ok(())
 }
 
@@ -252,8 +263,8 @@ pub fn handle_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event: TauriS
 
     // Get application state and settings
     let state = app.state::<AppState>();
-    let sound_enabled: bool = get_setting_from_store(app, StoreKey::SoundEnabled, true);
-    let auto_mute_audio: bool = get_setting_from_store(app, StoreKey::AutoMuteAudio, false);
+    let sound_enabled: bool = get_setting_from_store(app, LocalOnlySetting::SoundEnabled, true);
+    let auto_mute_audio: bool = get_setting_from_store(app, LocalOnlySetting::AutoMuteAudio, false);
     let audio_mute_manager = app.try_state::<AudioMuteManager>();
 
     // Lock the state for the duration of the transition
@@ -370,6 +381,56 @@ fn list_native_mic_devices(state: tauri::State<'_, MicCaptureManager>) -> Vec<Au
     state.capture().list_devices()
 }
 
+/// Get current active app context snapshot
+#[tauri::command]
+fn active_app_get_current_context(app: AppHandle) -> active_app_context::ActiveAppContextSnapshot {
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (snapshot_sender, snapshot_receiver) =
+            mpsc::sync_channel::<active_app_context::ActiveAppContextSnapshot>(1);
+
+        if let Err(error) = app.run_on_main_thread(move || {
+            let snapshot = get_current_active_app_context();
+            let _ = snapshot_sender.send(snapshot);
+        }) {
+            log::warn!(
+                "Failed to dispatch focus snapshot to macOS main thread: {error}. Returning fallback active app context."
+            );
+            return fallback_active_app_context_snapshot();
+        }
+
+        snapshot_receiver
+            .recv_timeout(Duration::from_millis(150))
+            .unwrap_or_else(|error| {
+                log::warn!(
+                    "Timed out waiting for macOS focus snapshot on main thread: {error}. Returning fallback active app context."
+                );
+                fallback_active_app_context_snapshot()
+            })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        get_current_active_app_context()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fallback_active_app_context_snapshot() -> active_app_context::ActiveAppContextSnapshot {
+    active_app_context::ActiveAppContextSnapshot {
+        focused_application: None,
+        focused_window: None,
+        focused_browser_tab: None,
+        event_source: active_app_context::FocusEventSource::Unknown,
+        confidence_level: active_app_context::FocusConfidenceLevel::Low,
+        captured_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::too_many_lines)]
 pub fn run() {
@@ -414,6 +475,7 @@ pub fn run() {
             commands::settings::update_stt_timeout,
             commands::settings::update_server_url,
             commands::settings::update_llm_formatting_enabled,
+            commands::settings::update_send_active_app_context_enabled,
             commands::settings::reset_hotkeys_to_defaults,
             is_audio_mute_supported,
             commands::history::add_history_entry,
@@ -437,6 +499,7 @@ pub fn run() {
             pause_native_mic,
             resume_native_mic,
             list_native_mic_devices,
+            active_app_get_current_context,
         ])
         .setup(|app| {
             // Initialize history storage
@@ -460,6 +523,23 @@ pub fn run() {
                 let _ = app_handle.emit(EventName::NativeAudioData.as_str(), audio_data);
             });
             app.manage(mic_capture_manager);
+
+            #[cfg(desktop)]
+            {
+                let send_active_app_context_enabled = get_setting_from_store(
+                    app.handle(),
+                    LocalOnlySetting::SendActiveAppContextEnabled,
+                    false,
+                );
+                if let Err(error) = commands::settings::reconcile_focus_watcher_enabled_state(
+                    app.handle(),
+                    send_active_app_context_enabled,
+                ) {
+                    log::warn!(
+                        "Failed to reconcile focus watcher lifecycle during startup: {error:#}"
+                    );
+                }
+            }
 
             // Register shortcuts from store (now that store plugin is available)
             // This function handles errors gracefully - it never fails the app startup
@@ -624,13 +704,19 @@ pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrat
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
     // Read hotkeys from store with defaults
-    let mut toggle_hotkey: HotkeyConfig =
-        get_setting_from_store(app, StoreKey::ToggleHotkey, HotkeyConfig::default_toggle());
-    let mut hold_hotkey: HotkeyConfig =
-        get_setting_from_store(app, StoreKey::HoldHotkey, HotkeyConfig::default_hold());
+    let mut toggle_hotkey: HotkeyConfig = get_setting_from_store(
+        app,
+        LocalOnlySetting::ToggleHotkey,
+        HotkeyConfig::default_toggle(),
+    );
+    let mut hold_hotkey: HotkeyConfig = get_setting_from_store(
+        app,
+        LocalOnlySetting::HoldHotkey,
+        HotkeyConfig::default_hold(),
+    );
     let mut paste_last_hotkey: HotkeyConfig = get_setting_from_store(
         app,
-        StoreKey::PasteLastHotkey,
+        LocalOnlySetting::PasteLastHotkey,
         HotkeyConfig::default_paste_last(),
     );
 
@@ -657,7 +743,7 @@ pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrat
     // Helper to try registering a single shortcut
     let try_register = |hotkey: &mut HotkeyConfig,
                         name: &str,
-                        store_key: StoreKey,
+                        local_only_setting: LocalOnlySetting,
                         default_fn: fn() -> HotkeyConfig,
                         registered: &mut bool,
                         error: &mut Option<String>| {
@@ -678,7 +764,7 @@ pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrat
                 *error = Some(format!("Hotkey conflict: {e}"));
                 log::warn!("Failed to register {name} shortcut: {e}. Auto-disabling.");
                 hotkey.enabled = false;
-                let _ = save_setting_to_store(app, store_key, hotkey);
+                let _ = save_setting_to_store(app, local_only_setting.into(), hotkey);
             }
         }
     };
@@ -686,7 +772,7 @@ pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrat
     try_register(
         &mut toggle_hotkey,
         "Toggle",
-        StoreKey::ToggleHotkey,
+        LocalOnlySetting::ToggleHotkey,
         HotkeyConfig::default_toggle,
         &mut result.toggle_registered,
         &mut result.errors.toggle_error,
@@ -694,7 +780,7 @@ pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrat
     try_register(
         &mut hold_hotkey,
         "Hold",
-        StoreKey::HoldHotkey,
+        LocalOnlySetting::HoldHotkey,
         HotkeyConfig::default_hold,
         &mut result.hold_registered,
         &mut result.errors.hold_error,
@@ -702,7 +788,7 @@ pub(crate) fn do_register_shortcuts(app: &AppHandle) -> state::ShortcutRegistrat
     try_register(
         &mut paste_last_hotkey,
         "PasteLast",
-        StoreKey::PasteLastHotkey,
+        LocalOnlySetting::PasteLastHotkey,
         HotkeyConfig::default_paste_last,
         &mut result.paste_last_registered,
         &mut result.errors.paste_last_error,

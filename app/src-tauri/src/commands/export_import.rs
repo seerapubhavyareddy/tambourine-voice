@@ -1,3 +1,4 @@
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -6,7 +7,8 @@ use tauri::{AppHandle, Manager};
 use crate::config_sync::{ConfigSync, DEFAULT_STT_TIMEOUT_SECONDS};
 use crate::history::{HistoryEntry, HistoryImportResult, HistoryImportStrategy, HistoryStorage};
 use crate::settings::{
-    AppSettings, CleanupPromptSections, PromptMode, PromptSection, PromptSectionType, StoreKey,
+    AppSettings, CleanupPromptSections, HttpSyncedSetting, LocalOnlySetting, PromptMode,
+    PromptSection, PromptSectionType, RtviSyncedSetting, SettingClass,
 };
 
 #[cfg(desktop)]
@@ -30,7 +32,9 @@ const PROMPT_COMMENT_PREFIX: &str = "<!-- tambourine-prompt: ";
 const PROMPT_COMMENT_SUFFIX: &str = " -->";
 
 /// Settings data for export (excludes prompts - they're exported as .md files)
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SettingsExportData {
     pub toggle_hotkey: crate::settings::HotkeyConfig,
     pub hold_hotkey: crate::settings::HotkeyConfig,
@@ -42,7 +46,15 @@ pub struct SettingsExportData {
     pub llm_provider: String,
     pub auto_mute_audio: bool,
     pub stt_timeout_seconds: Option<f64>,
+    pub llm_formatting_enabled: bool,
     pub server_url: String,
+    pub send_active_app_context_enabled: bool,
+}
+
+impl Default for SettingsExportData {
+    fn default() -> Self {
+        AppSettings::default().into()
+    }
 }
 
 impl From<AppSettings> for SettingsExportData {
@@ -57,7 +69,30 @@ impl From<AppSettings> for SettingsExportData {
             llm_provider: settings.llm_provider,
             auto_mute_audio: settings.auto_mute_audio,
             stt_timeout_seconds: settings.stt_timeout_seconds,
+            llm_formatting_enabled: settings.llm_formatting_enabled,
             server_url: settings.server_url,
+            send_active_app_context_enabled: settings.send_active_app_context_enabled,
+        }
+    }
+}
+
+impl From<SettingsExportData> for AppSettings {
+    fn from(exported_settings: SettingsExportData) -> Self {
+        Self {
+            toggle_hotkey: exported_settings.toggle_hotkey,
+            hold_hotkey: exported_settings.hold_hotkey,
+            paste_last_hotkey: exported_settings.paste_last_hotkey,
+            selected_mic_id: exported_settings.selected_mic_id,
+            sound_enabled: exported_settings.sound_enabled,
+            // Prompts are imported from prompt markdown files, not the JSON settings file.
+            cleanup_prompt_sections: None,
+            stt_provider: exported_settings.stt_provider,
+            llm_provider: exported_settings.llm_provider,
+            auto_mute_audio: exported_settings.auto_mute_audio,
+            stt_timeout_seconds: exported_settings.stt_timeout_seconds,
+            llm_formatting_enabled: exported_settings.llm_formatting_enabled,
+            server_url: exported_settings.server_url,
+            send_active_app_context_enabled: exported_settings.send_active_app_context_enabled,
         }
     }
 }
@@ -95,6 +130,57 @@ pub enum DetectedFileType {
     History,
     Unknown,
 }
+
+/// Warning from best-effort runtime setting application.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeApplyWarningCode {
+    #[serde(rename = "focus_watcher_reconcile_failed")]
+    FocusWatcherReconcile,
+    #[serde(rename = "prompt_sections_sync_failed")]
+    PromptSectionsSync,
+    #[serde(rename = "stt_timeout_sync_failed")]
+    SttTimeoutSync,
+    #[serde(rename = "llm_formatting_sync_failed")]
+    LlmFormattingSync,
+}
+
+/// Runtime action that was successfully applied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeApplyAction {
+    FocusWatcherEnabled,
+    FocusWatcherDisabled,
+    PromptSectionsSynced,
+    SttTimeoutSynced,
+    LlmFormattingSynced,
+}
+
+/// Warning from best-effort runtime setting application.
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeApplyWarning {
+    pub code: RuntimeApplyWarningCode,
+    pub message: String,
+    #[serde(serialize_with = "serialize_setting_class_as_storage_key_name")]
+    pub setting_key: SettingClass,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeActionApplied {
+    pub action: RuntimeApplyAction,
+    #[serde(serialize_with = "serialize_setting_class_as_storage_key_name")]
+    pub setting_key: SettingClass,
+}
+
+/// Runtime application summary returned by import/reset commands.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct RuntimeApplyOutcome {
+    pub warnings: Vec<RuntimeApplyWarning>,
+    pub runtime_actions_applied: Vec<RuntimeActionApplied>,
+}
+
+pub type ImportSettingsOutcome = RuntimeApplyOutcome;
+pub type FactoryResetOutcome = RuntimeApplyOutcome;
 
 // ============================================================================
 // HELPER FOR FILE TYPE DETECTION
@@ -160,7 +246,9 @@ pub fn generate_history_export(app: AppHandle) -> Result<String, String> {
 /// Returns a `HashMap` of section name -> markdown content (always 3 files with state markers).
 #[cfg(desktop)]
 #[tauri::command]
-pub fn generate_prompt_exports(app: AppHandle) -> Result<HashMap<String, String>, String> {
+pub fn generate_prompt_exports(
+    app: AppHandle,
+) -> Result<HashMap<PromptSectionType, String>, String> {
     use super::settings::get_settings;
 
     let settings = get_settings(app)?;
@@ -191,7 +279,7 @@ pub fn generate_prompt_exports(app: AppHandle) -> Result<HashMap<String, String>
 
         for section_type in PromptSectionType::ALL {
             prompts.insert(
-                section_type.as_str().to_string(),
+                section_type,
                 format_prompt(section_type.as_str(), sections.get(section_type)),
             );
         }
@@ -202,14 +290,16 @@ pub fn generate_prompt_exports(app: AppHandle) -> Result<HashMap<String, String>
 
 #[cfg(not(desktop))]
 #[tauri::command]
-pub fn generate_prompt_exports(_app: AppHandle) -> Result<HashMap<String, String>, String> {
+pub fn generate_prompt_exports(
+    _app: AppHandle,
+) -> Result<HashMap<PromptSectionType, String>, String> {
     Ok(HashMap::new())
 }
 
 /// Parse a prompt file content and extract the section name from the HTML comment.
 /// Returns (`section_name`, content) if valid, or an error message.
 #[tauri::command]
-pub fn parse_prompt_file(content: String) -> Result<(String, String), String> {
+pub fn parse_prompt_file(content: String) -> Result<(PromptSectionType, String), String> {
     let trimmed = content.trim();
 
     // Check for HTML comment header
@@ -226,14 +316,13 @@ pub fn parse_prompt_file(content: String) -> Result<(String, String), String> {
     let section_name = after_prefix[..suffix_pos].trim();
 
     // Validate section name by parsing as PromptSectionType
-    section_name.parse::<PromptSectionType>()?;
-    let section_name = section_name.to_string();
+    let section_type = section_name.parse::<PromptSectionType>()?;
 
     // Extract content after the comment
     let content_start = PROMPT_COMMENT_PREFIX.len() + suffix_pos + PROMPT_COMMENT_SUFFIX.len();
     let prompt_content = trimmed[content_start..].trim().to_string();
 
-    Ok((section_name, prompt_content))
+    Ok((section_type, prompt_content))
 }
 
 /// Import a prompt into the specified section.
@@ -241,19 +330,16 @@ pub fn parse_prompt_file(content: String) -> Result<(String, String), String> {
 #[tauri::command]
 pub async fn import_prompt(
     app: AppHandle,
-    section: String,
+    section: PromptSectionType,
     content: String,
     config_sync: tauri::State<'_, ConfigSync>,
 ) -> Result<(), String> {
     use super::settings::get_setting_from_store;
 
-    // Validate and parse section name
-    let section_type: PromptSectionType = section.parse()?;
-
     // Get current prompt sections or use default
     let mut sections: CleanupPromptSections = get_setting_from_store(
         &app,
-        StoreKey::CleanupPromptSections,
+        HttpSyncedSetting::CleanupPromptSections,
         CleanupPromptSections::default(),
     );
 
@@ -291,10 +377,15 @@ pub async fn import_prompt(
         prompt_mode,
     };
 
-    sections.set(section_type, new_section);
+    sections.set(section, new_section);
 
     // Save updated sections
-    crate::save_setting_to_store(&app, StoreKey::CleanupPromptSections, &sections)?;
+    crate::save_setting_to_store(
+        &app,
+        HttpSyncedSetting::CleanupPromptSections.into(),
+        &sections,
+    )
+    .map_err(|error| format!("Failed to save imported prompt section: {error:#}"))?;
 
     // Sync to server if connected
     let sync = config_sync.read().await;
@@ -304,7 +395,7 @@ pub async fn import_prompt(
         }
     }
 
-    log::info!("Imported prompt for section: {}", section_type.as_str());
+    log::info!("Imported prompt for section: {}", section.as_str());
     Ok(())
 }
 
@@ -312,7 +403,7 @@ pub async fn import_prompt(
 #[tauri::command]
 pub async fn import_prompt(
     _app: AppHandle,
-    _section: String,
+    _section: PromptSectionType,
     _content: String,
     _config_sync: tauri::State<'_, ConfigSync>,
 ) -> Result<(), String> {
@@ -360,6 +451,242 @@ pub fn detect_export_file_type(content: String) -> DetectedFileType {
     }
 }
 
+// ============================================================================
+// SETTINGS IMPORT/RESET STORE MAPPING
+// ============================================================================
+
+const IMPORT_EXPORT_SETTING_CLASSES: [SettingClass; 12] = [
+    SettingClass::LocalOnly(LocalOnlySetting::ToggleHotkey),
+    SettingClass::LocalOnly(LocalOnlySetting::HoldHotkey),
+    SettingClass::LocalOnly(LocalOnlySetting::PasteLastHotkey),
+    SettingClass::LocalOnly(LocalOnlySetting::SelectedMicId),
+    SettingClass::LocalOnly(LocalOnlySetting::SoundEnabled),
+    SettingClass::ServerSyncedRtvi(RtviSyncedSetting::SttProvider),
+    SettingClass::ServerSyncedRtvi(RtviSyncedSetting::LlmProvider),
+    SettingClass::LocalOnly(LocalOnlySetting::AutoMuteAudio),
+    SettingClass::ServerSyncedHttp(HttpSyncedSetting::SttTimeoutSeconds),
+    SettingClass::ServerSyncedHttp(HttpSyncedSetting::LlmFormattingEnabled),
+    SettingClass::LocalOnly(LocalOnlySetting::ServerUrl),
+    SettingClass::LocalOnly(LocalOnlySetting::SendActiveAppContextEnabled),
+];
+
+const FACTORY_RESET_SETTING_CLASSES: [SettingClass; 9] = [
+    SettingClass::LocalOnly(LocalOnlySetting::ToggleHotkey),
+    SettingClass::LocalOnly(LocalOnlySetting::HoldHotkey),
+    SettingClass::LocalOnly(LocalOnlySetting::PasteLastHotkey),
+    SettingClass::LocalOnly(LocalOnlySetting::SoundEnabled),
+    SettingClass::ServerSyncedRtvi(RtviSyncedSetting::SttProvider),
+    SettingClass::ServerSyncedRtvi(RtviSyncedSetting::LlmProvider),
+    SettingClass::LocalOnly(LocalOnlySetting::AutoMuteAudio),
+    SettingClass::LocalOnly(LocalOnlySetting::ServerUrl),
+    SettingClass::LocalOnly(LocalOnlySetting::SendActiveAppContextEnabled),
+];
+
+fn serialized_value_for_setting_class(
+    app_settings: &AppSettings,
+    setting_class: SettingClass,
+) -> anyhow::Result<serde_json::Value> {
+    let setting_value = match setting_class {
+        SettingClass::LocalOnly(local_only_setting) => match local_only_setting {
+            LocalOnlySetting::ToggleHotkey => serde_json::to_value(&app_settings.toggle_hotkey),
+            LocalOnlySetting::HoldHotkey => serde_json::to_value(&app_settings.hold_hotkey),
+            LocalOnlySetting::PasteLastHotkey => {
+                serde_json::to_value(&app_settings.paste_last_hotkey)
+            }
+            LocalOnlySetting::SelectedMicId => serde_json::to_value(&app_settings.selected_mic_id),
+            LocalOnlySetting::SoundEnabled => serde_json::to_value(app_settings.sound_enabled),
+            LocalOnlySetting::AutoMuteAudio => serde_json::to_value(app_settings.auto_mute_audio),
+            LocalOnlySetting::ServerUrl => serde_json::to_value(&app_settings.server_url),
+            LocalOnlySetting::SendActiveAppContextEnabled => {
+                serde_json::to_value(app_settings.send_active_app_context_enabled)
+            }
+        },
+        SettingClass::ServerSyncedHttp(http_synced_setting) => match http_synced_setting {
+            HttpSyncedSetting::CleanupPromptSections => {
+                serde_json::to_value(&app_settings.cleanup_prompt_sections)
+            }
+            HttpSyncedSetting::SttTimeoutSeconds => {
+                serde_json::to_value(app_settings.stt_timeout_seconds)
+            }
+            HttpSyncedSetting::LlmFormattingEnabled => {
+                serde_json::to_value(app_settings.llm_formatting_enabled)
+            }
+        },
+        SettingClass::ServerSyncedRtvi(rtvi_synced_setting) => match rtvi_synced_setting {
+            RtviSyncedSetting::SttProvider => serde_json::to_value(&app_settings.stt_provider),
+            RtviSyncedSetting::LlmProvider => serde_json::to_value(&app_settings.llm_provider),
+        },
+    };
+
+    setting_value.with_context(|| {
+        format!(
+            "Failed to serialize setting value for key '{}'",
+            setting_class.storage_key_name()
+        )
+    })
+}
+
+fn write_setting_classes_to_store(
+    app_settings: &AppSettings,
+    setting_classes: &[SettingClass],
+    mut write_setting_entry: impl FnMut(SettingClass, serde_json::Value),
+) -> anyhow::Result<()> {
+    for setting_class in setting_classes {
+        let setting_value = serialized_value_for_setting_class(app_settings, *setting_class)?;
+        write_setting_entry(*setting_class, setting_value);
+    }
+    Ok(())
+}
+
+#[cfg(desktop)]
+fn apply_runtime_warning(
+    code: RuntimeApplyWarningCode,
+    setting_key: SettingClass,
+    message: String,
+) -> RuntimeApplyWarning {
+    RuntimeApplyWarning {
+        code,
+        message,
+        setting_key,
+    }
+}
+
+#[cfg(desktop)]
+fn apply_runtime_action(
+    action: RuntimeApplyAction,
+    setting_key: SettingClass,
+) -> RuntimeActionApplied {
+    RuntimeActionApplied {
+        action,
+        setting_key,
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn serialize_setting_class_as_storage_key_name<S>(
+    setting_class: &SettingClass,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(setting_class.storage_key_name())
+}
+
+#[cfg(desktop)]
+async fn apply_runtime_side_effects(
+    app: &AppHandle,
+    send_active_app_context_enabled: bool,
+    llm_formatting_enabled: bool,
+    stt_timeout_seconds_to_sync: Option<f64>,
+    prompt_sections_to_sync: Option<&CleanupPromptSections>,
+    config_sync: &ConfigSync,
+) -> RuntimeApplyOutcome {
+    let mut runtime_apply_outcome = RuntimeApplyOutcome::default();
+
+    match super::settings::reconcile_focus_watcher_enabled_state(
+        app,
+        send_active_app_context_enabled,
+    ) {
+        Ok(()) => {
+            let focus_watcher_action = if send_active_app_context_enabled {
+                RuntimeApplyAction::FocusWatcherEnabled
+            } else {
+                RuntimeApplyAction::FocusWatcherDisabled
+            };
+            runtime_apply_outcome
+                .runtime_actions_applied
+                .push(apply_runtime_action(
+                    focus_watcher_action,
+                    LocalOnlySetting::SendActiveAppContextEnabled.into(),
+                ));
+        }
+        Err(error) => {
+            runtime_apply_outcome.warnings.push(apply_runtime_warning(
+                RuntimeApplyWarningCode::FocusWatcherReconcile,
+                LocalOnlySetting::SendActiveAppContextEnabled.into(),
+                format!(
+                    "Failed to sync active app context watcher: {error:#}. Toggle 'Send active app context' to retry sync."
+                ),
+            ));
+        }
+    }
+
+    let sync = config_sync.read().await;
+    if !sync.is_connected() {
+        return runtime_apply_outcome;
+    }
+
+    if let Some(prompt_sections) = prompt_sections_to_sync {
+        match sync.sync_prompt_sections(prompt_sections).await {
+            Ok(()) => {
+                runtime_apply_outcome
+                    .runtime_actions_applied
+                    .push(apply_runtime_action(
+                        RuntimeApplyAction::PromptSectionsSynced,
+                        HttpSyncedSetting::CleanupPromptSections.into(),
+                    ));
+            }
+            Err(error) => {
+                runtime_apply_outcome.warnings.push(apply_runtime_warning(
+                    RuntimeApplyWarningCode::PromptSectionsSync,
+                    HttpSyncedSetting::CleanupPromptSections.into(),
+                    format!(
+                        "Failed to sync prompt sections to server: {error:#}. Toggle a prompt section to retry sync."
+                    ),
+                ));
+            }
+        }
+    }
+
+    if let Some(timeout_seconds) = stt_timeout_seconds_to_sync {
+        match sync.sync_stt_timeout(timeout_seconds).await {
+            Ok(()) => {
+                runtime_apply_outcome
+                    .runtime_actions_applied
+                    .push(apply_runtime_action(
+                        RuntimeApplyAction::SttTimeoutSynced,
+                        HttpSyncedSetting::SttTimeoutSeconds.into(),
+                    ));
+            }
+            Err(error) => {
+                runtime_apply_outcome.warnings.push(apply_runtime_warning(
+                    RuntimeApplyWarningCode::SttTimeoutSync,
+                    HttpSyncedSetting::SttTimeoutSeconds.into(),
+                    format!(
+                        "Failed to sync STT timeout to server: {error:#}. Change 'STT timeout' to retry sync."
+                    ),
+                ));
+            }
+        }
+    }
+
+    match sync
+        .sync_llm_formatting_enabled(llm_formatting_enabled)
+        .await
+    {
+        Ok(()) => {
+            runtime_apply_outcome
+                .runtime_actions_applied
+                .push(apply_runtime_action(
+                    RuntimeApplyAction::LlmFormattingSynced,
+                    HttpSyncedSetting::LlmFormattingEnabled.into(),
+                ));
+        }
+        Err(error) => {
+            runtime_apply_outcome.warnings.push(apply_runtime_warning(
+                RuntimeApplyWarningCode::LlmFormattingSync,
+                HttpSyncedSetting::LlmFormattingEnabled.into(),
+                format!(
+                    "Failed to sync LLM formatting mode to server: {error:#}. Toggle 'LLM formatting' to retry sync."
+                ),
+            ));
+        }
+    }
+
+    runtime_apply_outcome
+}
+
 /// Import settings from a JSON string
 #[cfg(desktop)]
 #[tauri::command]
@@ -367,7 +694,7 @@ pub async fn import_settings(
     app: AppHandle,
     content: String,
     config_sync: tauri::State<'_, ConfigSync>,
-) -> Result<(), String> {
+) -> Result<ImportSettingsOutcome, String> {
     // Parse the export file
     let export: SettingsExportFile = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse settings file: {e}"))?;
@@ -394,67 +721,43 @@ pub async fn import_settings(
         .map_err(|e| format!("Failed to get store: {e}"))?;
 
     // Import each setting
-    let settings = export.data;
+    let imported_settings: AppSettings = export.data.into();
 
-    // Save each setting individually so we can handle defaults properly
-    store.set(
-        StoreKey::ToggleHotkey.as_str(),
-        serde_json::to_value(&settings.toggle_hotkey).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::HoldHotkey.as_str(),
-        serde_json::to_value(&settings.hold_hotkey).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::PasteLastHotkey.as_str(),
-        serde_json::to_value(&settings.paste_last_hotkey).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::SelectedMicId.as_str(),
-        serde_json::to_value(&settings.selected_mic_id).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::SoundEnabled.as_str(),
-        serde_json::to_value(settings.sound_enabled).map_err(|e| e.to_string())?,
-    );
-    // Note: cleanup_prompt_sections is not imported here - prompts come from .md files
-    store.set(
-        StoreKey::SttProvider.as_str(),
-        serde_json::to_value(&settings.stt_provider).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::LlmProvider.as_str(),
-        serde_json::to_value(&settings.llm_provider).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::AutoMuteAudio.as_str(),
-        serde_json::to_value(settings.auto_mute_audio).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::SttTimeoutSeconds.as_str(),
-        serde_json::to_value(settings.stt_timeout_seconds).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::ServerUrl.as_str(),
-        serde_json::to_value(&settings.server_url).map_err(|e| e.to_string())?,
-    );
+    // Save each setting individually so we can handle defaults properly.
+    // Note: cleanup_prompt_sections is not imported here - prompts come from .md files.
+    write_setting_classes_to_store(
+        &imported_settings,
+        &IMPORT_EXPORT_SETTING_CLASSES,
+        |setting_class, setting_value| {
+            store.set(setting_class.storage_key_name(), setting_value);
+        },
+    )
+    .map_err(|error| format!("Failed to serialize setting for import: {error:#}"))?;
 
     store
         .save()
         .map_err(|e| format!("Failed to save settings: {e}"))?;
 
-    log::info!("Successfully imported settings from export file");
+    let runtime_apply_outcome = apply_runtime_side_effects(
+        &app,
+        imported_settings.send_active_app_context_enabled,
+        imported_settings.llm_formatting_enabled,
+        imported_settings.stt_timeout_seconds,
+        None,
+        &config_sync,
+    )
+    .await;
 
-    let sync = config_sync.read().await;
-    if sync.is_connected() {
-        if let Some(timeout) = settings.stt_timeout_seconds {
-            if let Err(e) = sync.sync_stt_timeout(timeout).await {
-                log::warn!("Failed to sync STT timeout after import: {e}");
-            }
-        }
+    if runtime_apply_outcome.warnings.is_empty() {
+        log::info!("Successfully imported settings from export file");
+    } else {
+        log::warn!(
+            "Settings imported with {} runtime warnings",
+            runtime_apply_outcome.warnings.len()
+        );
     }
 
-    Ok(())
+    Ok(runtime_apply_outcome)
 }
 
 #[cfg(not(desktop))]
@@ -463,7 +766,7 @@ pub async fn import_settings(
     _app: AppHandle,
     _content: String,
     _config_sync: tauri::State<'_, ConfigSync>,
-) -> Result<(), String> {
+) -> Result<ImportSettingsOutcome, String> {
     Err("Not supported on this platform".to_string())
 }
 
@@ -515,7 +818,7 @@ pub fn import_history(
 pub async fn factory_reset(
     app: AppHandle,
     config_sync: tauri::State<'_, ConfigSync>,
-) -> Result<(), String> {
+) -> Result<FactoryResetOutcome, String> {
     // Clear the settings store completely
     let store = app
         .store("settings.json")
@@ -533,61 +836,40 @@ pub async fn factory_reset(
     // Re-initialize with default settings
     let default_settings = AppSettings::default();
 
-    store.set(
-        StoreKey::ToggleHotkey.as_str(),
-        serde_json::to_value(&default_settings.toggle_hotkey).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::HoldHotkey.as_str(),
-        serde_json::to_value(&default_settings.hold_hotkey).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::PasteLastHotkey.as_str(),
-        serde_json::to_value(&default_settings.paste_last_hotkey).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::SoundEnabled.as_str(),
-        serde_json::to_value(default_settings.sound_enabled).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::SttProvider.as_str(),
-        serde_json::to_value(&default_settings.stt_provider).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::LlmProvider.as_str(),
-        serde_json::to_value(&default_settings.llm_provider).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::AutoMuteAudio.as_str(),
-        serde_json::to_value(default_settings.auto_mute_audio).map_err(|e| e.to_string())?,
-    );
-    store.set(
-        StoreKey::ServerUrl.as_str(),
-        serde_json::to_value(&default_settings.server_url).map_err(|e| e.to_string())?,
-    );
+    write_setting_classes_to_store(
+        &default_settings,
+        &FACTORY_RESET_SETTING_CLASSES,
+        |setting_class, setting_value| {
+            store.set(setting_class.storage_key_name(), setting_value);
+        },
+    )
+    .map_err(|error| format!("Failed to serialize setting for factory reset: {error:#}"))?;
 
     store
         .save()
         .map_err(|e| format!("Failed to save default settings: {e}"))?;
 
-    // Sync defaults to server if connected
-    let sync = config_sync.read().await;
-    if sync.is_connected() {
-        // Reset prompts to default mode
-        let default_sections = CleanupPromptSections::default();
-        if let Err(e) = sync.sync_prompt_sections(&default_sections).await {
-            log::warn!("Failed to sync prompts on factory reset: {e}");
-        }
+    let default_sections = CleanupPromptSections::default();
+    let runtime_apply_outcome = apply_runtime_side_effects(
+        &app,
+        default_settings.send_active_app_context_enabled,
+        default_settings.llm_formatting_enabled,
+        Some(DEFAULT_STT_TIMEOUT_SECONDS),
+        Some(&default_sections),
+        &config_sync,
+    )
+    .await;
 
-        // Reset STT timeout to default
-        if let Err(e) = sync.sync_stt_timeout(DEFAULT_STT_TIMEOUT_SECONDS).await {
-            log::warn!("Failed to sync STT timeout on factory reset: {e}");
-        }
+    if runtime_apply_outcome.warnings.is_empty() {
+        log::info!("Factory reset completed: settings and history cleared");
+    } else {
+        log::warn!(
+            "Factory reset completed with {} runtime warnings",
+            runtime_apply_outcome.warnings.len()
+        );
     }
 
-    log::info!("Factory reset completed: settings and history cleared");
-
-    Ok(())
+    Ok(runtime_apply_outcome)
 }
 
 #[cfg(not(desktop))]
@@ -595,6 +877,6 @@ pub async fn factory_reset(
 pub async fn factory_reset(
     _app: AppHandle,
     _config_sync: tauri::State<'_, ConfigSync>,
-) -> Result<(), String> {
+) -> Result<FactoryResetOutcome, String> {
     Err("Not supported on this platform".to_string())
 }

@@ -27,9 +27,10 @@ import {
 	useConnectionState,
 } from "./contexts/ConnectionContext";
 import { useNativeAudioTrack } from "./hooks/useNativeAudioTrack";
+import type { ActiveAppContextSnapshot } from "./lib/activeAppContext";
 import { useAddHistoryEntry, useSettings, useTypeText } from "./lib/queries";
 import { safeSendClientMessage } from "./lib/safeSendClientMessage";
-import { KNOWN_SETTINGS, tauriAPI } from "./lib/tauri";
+import { tauriAPI } from "./lib/tauri";
 import type { ConnectionMachineStateValue } from "./machines/connectionMachine";
 import "./overlay-global.css";
 
@@ -50,13 +51,13 @@ const KnownServerMessageSchema = z.discriminatedUnion("type", [
 	// z.enum() validates known settings; unknown settings become UnknownServerMessage
 	z.object({
 		type: z.literal("config-updated"),
-		setting: z.enum(KNOWN_SETTINGS),
+		setting: z.string(),
 		value: z.unknown(),
 		success: z.literal(true),
 	}),
 	z.object({
 		type: z.literal("config-error"),
-		setting: z.enum(KNOWN_SETTINGS),
+		setting: z.string(),
 		error: z.string(),
 	}),
 ]);
@@ -222,6 +223,11 @@ function RecordingControl() {
 	// State and refs for mic acquisition optimization
 	const [isMicAcquiring, setIsMicAcquiring] = useState(false);
 	const micPreparedRef = useRef(false);
+	const latestActiveAppContextRef = useRef<ActiveAppContextSnapshot | null>(
+		null,
+	);
+	const activeAppContextSentForCurrentRecordingRef =
+		useRef<ActiveAppContextSnapshot | null>(null);
 	// Track the last mic device ID used for capture
 	// undefined = never started, null = system default, string = specific device
 	const lastMicIdRef = useRef<string | null | undefined>(undefined);
@@ -287,6 +293,7 @@ function RecordingControl() {
 		// because UserTranscript events arrive DURING recording, before LLM processes
 		streamedLlmResponseChunksRef.current = "";
 		rawTranscriptionRef.current = "";
+		activeAppContextSentForCurrentRecordingRef.current = null;
 
 		// Always show loading indicator during mic acquisition and recording start
 		// This ensures accurate UX feedback even when mic is pre-warmed
@@ -351,8 +358,24 @@ function RecordingControl() {
 				// Signal server to start turn management
 				// LLM formatting is now controlled globally via the config API
 				// Use safe send to detect communication failures and trigger reconnection
-				safeSendClientMessage(client, "start-recording", {}, (error) =>
-					send({ type: "COMMUNICATION_ERROR", error }),
+				const activeAppContextSentForCurrentRecording =
+					settings?.send_active_app_context_enabled === true
+						? latestActiveAppContextRef.current
+						: null;
+				activeAppContextSentForCurrentRecordingRef.current =
+					activeAppContextSentForCurrentRecording;
+				const startRecordingData = activeAppContextSentForCurrentRecording
+					? { active_app_context: activeAppContextSentForCurrentRecording }
+					: {};
+				console.debug(
+					"[Active App Context] Sending start-recording payload:",
+					startRecordingData,
+				);
+				safeSendClientMessage(
+					client,
+					"start-recording",
+					startRecordingData,
+					(error) => send({ type: "COMMUNICATION_ERROR", error }),
 				);
 			}
 		} catch (error) {
@@ -363,6 +386,7 @@ function RecordingControl() {
 	}, [
 		client,
 		settings?.selected_mic_id,
+		settings?.send_active_app_context_enabled,
 		isNativeAudioReady,
 		nativeAudioTrack,
 		startNativeCapture,
@@ -424,8 +448,16 @@ function RecordingControl() {
 			safeSendClientMessage(client, "stop-recording", {}, (error) =>
 				send({ type: "COMMUNICATION_ERROR", error }),
 			);
+		} else {
+			activeAppContextSentForCurrentRecordingRef.current = null;
 		}
 	}, [client, displayState, stopNativeCapture, send, startResponseTimeout]);
+
+	useEffect(() => {
+		if (displayState !== "recording" && displayState !== "processing") {
+			activeAppContextSentForCurrentRecordingRef.current = null;
+		}
+	}, [displayState]);
 
 	useEffect(() => {
 		let isCancelled = false;
@@ -515,6 +547,44 @@ function RecordingControl() {
 			unlisten?.();
 		};
 	}, [queryClient]);
+
+	// Listen for active app context updates from Rust
+	useEffect(() => {
+		let unlisten: (() => void) | undefined;
+		let shouldIgnoreSetupResults = false;
+
+		const setup = async () => {
+			unlisten = await tauriAPI.onActiveAppContextChanged((payload) => {
+				latestActiveAppContextRef.current = payload;
+			});
+
+			try {
+				const seededActiveAppContextSnapshot =
+					await tauriAPI.activeAppGetCurrentContext();
+				if (shouldIgnoreSetupResults) {
+					return;
+				}
+
+				// Seed startup active app context only when no live event has populated it yet.
+				// Keep startup behavior simple and best-effort without recency comparisons.
+				if (!latestActiveAppContextRef.current) {
+					latestActiveAppContextRef.current = seededActiveAppContextSnapshot;
+				}
+			} catch (error) {
+				console.warn(
+					"[Active App Context] Failed to fetch startup focus snapshot:",
+					error,
+				);
+			}
+		};
+
+		setup();
+
+		return () => {
+			shouldIgnoreSetupResults = true;
+			unlisten?.();
+		};
+	}, []);
 
 	// Listen for disconnect request from Rust (triggered on app quit)
 	useEffect(() => {
@@ -626,6 +696,8 @@ function RecordingControl() {
 			clearResponseTimeout();
 			const text = streamedLlmResponseChunksRef.current.trim();
 			const rawText = rawTranscriptionRef.current.trim();
+			const activeAppContextSentForCurrentRecording =
+				activeAppContextSentForCurrentRecordingRef.current;
 			streamedLlmResponseChunksRef.current = "";
 			rawTranscriptionRef.current = "";
 
@@ -637,8 +709,13 @@ function RecordingControl() {
 				} catch (error) {
 					console.error("[Pipecat] Failed to type text:", error);
 				}
-				addHistoryEntry.mutate({ text, rawText });
+				addHistoryEntry.mutate({
+					text,
+					rawText,
+					activeAppContext: activeAppContextSentForCurrentRecording,
+				});
 			}
+			activeAppContextSentForCurrentRecordingRef.current = null;
 			send({ type: "RESPONSE_RECEIVED" });
 		}, [clearResponseTimeout, typeTextMutation, addHistoryEntry, send]),
 	);
@@ -654,11 +731,14 @@ function RecordingControl() {
 				match(parsed)
 					.with({ type: "recording-complete" }, () => {
 						clearResponseTimeout();
+						activeAppContextSentForCurrentRecordingRef.current = null;
 						send({ type: "RESPONSE_RECEIVED" });
 					})
 					.with({ type: "raw-transcription" }, async ({ text }) => {
 						// Raw transcription received (LLM bypassed)
 						clearResponseTimeout();
+						const activeAppContextSentForCurrentRecording =
+							activeAppContextSentForCurrentRecordingRef.current;
 						const trimmedText = text.trim();
 
 						if (trimmedText) {
@@ -675,8 +755,10 @@ function RecordingControl() {
 							addHistoryEntry.mutate({
 								text: trimmedText,
 								rawText: trimmedText,
+								activeAppContext: activeAppContextSentForCurrentRecording,
 							});
 						}
+						activeAppContextSentForCurrentRecordingRef.current = null;
 						send({ type: "RESPONSE_RECEIVED" });
 					})
 					.with({ type: "config-updated" }, ({ setting, value }) => {
@@ -726,6 +808,7 @@ function RecordingControl() {
 					// Return to idle if in processing state (error means no content coming)
 					if (displayState === "processing") {
 						clearResponseTimeout();
+						activeAppContextSentForCurrentRecordingRef.current = null;
 						send({ type: "RESPONSE_RECEIVED" });
 					}
 

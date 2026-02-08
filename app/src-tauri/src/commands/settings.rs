@@ -1,9 +1,14 @@
 use crate::settings::{
     check_hotkey_conflict, AppSettings, CleanupPromptSections, HotkeyConfig, HotkeyType,
-    SettingsError, StoreKey, DEFAULT_SERVER_URL,
+    HttpSyncedSetting, LocalOnlySetting, RtviSyncedSetting, SettingClass, SettingsError,
+    DEFAULT_SERVER_URL,
 };
 use crate::state::{AppState, ShortcutErrors, ShortcutRegistrationResult};
+use anyhow::{anyhow, Context};
 use tauri::{AppHandle, Manager};
+
+#[cfg(desktop)]
+use crate::active_app_context::sync_focus_watcher_enabled;
 
 #[cfg(desktop)]
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -35,14 +40,75 @@ pub async fn unregister_shortcuts(_app: AppHandle) -> Result<(), String> {
 #[cfg(desktop)]
 pub(crate) fn get_setting_from_store<T: serde::de::DeserializeOwned>(
     app: &AppHandle,
-    key: StoreKey,
+    setting_class: impl Into<SettingClass>,
     default: T,
 ) -> T {
+    let storage_key_name = setting_class.into().storage_key_name();
     app.store("settings.json")
         .ok()
-        .and_then(|store| store.get(key.as_str()))
+        .and_then(|store| store.get(storage_key_name))
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or(default)
+}
+
+fn persist_local_only_setting<T: serde::Serialize>(
+    app: &AppHandle,
+    local_only_setting: LocalOnlySetting,
+    value: &T,
+) -> anyhow::Result<()> {
+    crate::save_setting_to_store(app, local_only_setting.into(), value).with_context(|| {
+        format!(
+            "Failed to persist local-only setting '{}'",
+            local_only_setting.storage_key_name()
+        )
+    })
+}
+
+fn persist_http_synced_setting<T: serde::Serialize>(
+    app: &AppHandle,
+    http_synced_setting: HttpSyncedSetting,
+    value: &T,
+) -> anyhow::Result<()> {
+    crate::save_setting_to_store(app, http_synced_setting.into(), value).with_context(|| {
+        format!(
+            "Failed to persist HTTP-synced setting '{}'",
+            http_synced_setting.storage_key_name()
+        )
+    })
+}
+
+fn persist_rtvi_synced_setting<T: serde::Serialize>(
+    app: &AppHandle,
+    rtvi_synced_setting: RtviSyncedSetting,
+    value: &T,
+) -> anyhow::Result<()> {
+    crate::save_setting_to_store(app, rtvi_synced_setting.into(), value).with_context(|| {
+        format!(
+            "Failed to persist RTVI-synced setting '{}'",
+            rtvi_synced_setting.storage_key_name()
+        )
+    })
+}
+
+#[cfg(desktop)]
+pub(crate) fn reconcile_focus_watcher_enabled_state(
+    app: &AppHandle,
+    send_active_app_context_enabled: bool,
+) -> anyhow::Result<()> {
+    let app_state = app
+        .try_state::<AppState>()
+        .context("AppState unavailable while reconciling focus watcher lifecycle")?;
+
+    let mut focus_watcher_guard = app_state.focus_watcher.lock().map_err(|lock_error| {
+        anyhow!("Failed to lock focus watcher state for reconciliation: {lock_error}")
+    })?;
+
+    sync_focus_watcher_enabled(
+        app,
+        &mut focus_watcher_guard,
+        send_active_app_context_enabled,
+    );
+    Ok(())
 }
 
 /// Re-register global shortcuts with the current settings from the store.
@@ -81,12 +147,13 @@ pub async fn set_hotkey_enabled(
     hotkey_type: HotkeyType,
     enabled: bool,
 ) -> Result<(), String> {
-    let store_key = hotkey_type.store_key();
+    let local_only_setting = hotkey_type.local_only_setting();
     let mut hotkey: HotkeyConfig =
-        get_setting_from_store(&app, store_key, hotkey_type.default_hotkey());
+        get_setting_from_store(&app, local_only_setting, hotkey_type.default_hotkey());
     hotkey.enabled = enabled;
 
-    crate::save_setting_to_store(&app, store_key, &hotkey)?;
+    persist_local_only_setting(&app, local_only_setting, &hotkey)
+        .map_err(|error| format!("{error:#}"))?;
     log::info!(
         "Set {} hotkey enabled: {}",
         hotkey_type.display_name(),
@@ -118,36 +185,57 @@ pub fn get_settings(app: AppHandle) -> Result<AppSettings, String> {
     Ok(AppSettings {
         toggle_hotkey: get_setting_from_store(
             &app,
-            StoreKey::ToggleHotkey,
+            LocalOnlySetting::ToggleHotkey,
             HotkeyConfig::default_toggle(),
         ),
         hold_hotkey: get_setting_from_store(
             &app,
-            StoreKey::HoldHotkey,
+            LocalOnlySetting::HoldHotkey,
             HotkeyConfig::default_hold(),
         ),
         paste_last_hotkey: get_setting_from_store(
             &app,
-            StoreKey::PasteLastHotkey,
+            LocalOnlySetting::PasteLastHotkey,
             HotkeyConfig::default_paste_last(),
         ),
-        selected_mic_id: get_setting_from_store(&app, StoreKey::SelectedMicId, None),
-        sound_enabled: get_setting_from_store(&app, StoreKey::SoundEnabled, true),
+        selected_mic_id: get_setting_from_store(&app, LocalOnlySetting::SelectedMicId, None),
+        sound_enabled: get_setting_from_store(&app, LocalOnlySetting::SoundEnabled, true),
         cleanup_prompt_sections: get_setting_from_store(
             &app,
-            StoreKey::CleanupPromptSections,
+            HttpSyncedSetting::CleanupPromptSections,
             None,
         ),
-        stt_provider: get_setting_from_store(&app, StoreKey::SttProvider, "auto".to_string()),
-        llm_provider: get_setting_from_store(&app, StoreKey::LlmProvider, "auto".to_string()),
-        auto_mute_audio: get_setting_from_store(&app, StoreKey::AutoMuteAudio, false),
-        stt_timeout_seconds: get_setting_from_store(&app, StoreKey::SttTimeoutSeconds, None),
+        stt_provider: get_setting_from_store(
+            &app,
+            RtviSyncedSetting::SttProvider,
+            "auto".to_string(),
+        ),
+        llm_provider: get_setting_from_store(
+            &app,
+            RtviSyncedSetting::LlmProvider,
+            "auto".to_string(),
+        ),
+        auto_mute_audio: get_setting_from_store(&app, LocalOnlySetting::AutoMuteAudio, false),
+        stt_timeout_seconds: get_setting_from_store(
+            &app,
+            HttpSyncedSetting::SttTimeoutSeconds,
+            None,
+        ),
         server_url: get_setting_from_store(
             &app,
-            StoreKey::ServerUrl,
+            LocalOnlySetting::ServerUrl,
             DEFAULT_SERVER_URL.to_string(),
         ),
-        llm_formatting_enabled: get_setting_from_store(&app, StoreKey::LlmFormattingEnabled, true),
+        llm_formatting_enabled: get_setting_from_store(
+            &app,
+            HttpSyncedSetting::LlmFormattingEnabled,
+            true,
+        ),
+        send_active_app_context_enabled: get_setting_from_store(
+            &app,
+            LocalOnlySetting::SendActiveAppContextEnabled,
+            false,
+        ),
     })
 }
 
@@ -175,8 +263,9 @@ pub async fn update_hotkey(
     }
 
     // Save the hotkey
-    crate::save_setting_to_store(&app, hotkey_type.store_key(), &config)
-        .map_err(SettingsError::StoreError)?;
+    let local_only_setting = hotkey_type.local_only_setting();
+    persist_local_only_setting(&app, local_only_setting, &config)
+        .map_err(|error| SettingsError::StoreError(format!("{error:#}")))?;
 
     log::info!(
         "Updated {} hotkey to: {}",
@@ -201,7 +290,8 @@ pub async fn update_hotkey(
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_selected_mic(app: AppHandle, mic_id: Option<String>) -> Result<(), String> {
-    crate::save_setting_to_store(&app, StoreKey::SelectedMicId, &mic_id)?;
+    persist_local_only_setting(&app, LocalOnlySetting::SelectedMicId, &mic_id)
+        .map_err(|error| format!("{error:#}"))?;
     log::info!("Updated selected microphone: {mic_id:?}");
     Ok(())
 }
@@ -216,7 +306,8 @@ pub async fn update_selected_mic(_app: AppHandle, _mic_id: Option<String>) -> Re
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_sound_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
-    crate::save_setting_to_store(&app, StoreKey::SoundEnabled, &enabled)?;
+    persist_local_only_setting(&app, LocalOnlySetting::SoundEnabled, &enabled)
+        .map_err(|error| format!("{error:#}"))?;
     log::info!("Updated sound enabled: {enabled}");
     Ok(())
 }
@@ -236,7 +327,8 @@ pub async fn update_cleanup_prompt_sections(
     config_sync: tauri::State<'_, crate::config_sync::ConfigSync>,
 ) -> Result<(), String> {
     // Save locally
-    crate::save_setting_to_store(&app, StoreKey::CleanupPromptSections, &sections)?;
+    persist_http_synced_setting(&app, HttpSyncedSetting::CleanupPromptSections, &sections)
+        .map_err(|error| format!("{error:#}"))?;
     log::info!("Updated cleanup prompt sections");
 
     // Sync to server
@@ -263,7 +355,9 @@ pub async fn update_cleanup_prompt_sections(
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_stt_provider(app: AppHandle, provider: String) -> Result<(), String> {
-    crate::save_setting_to_store(&app, StoreKey::SttProvider, &provider)?;
+    // Provider settings are server-synced through RTVI from TypeScript, not Rust HTTP config sync.
+    persist_rtvi_synced_setting(&app, RtviSyncedSetting::SttProvider, &provider)
+        .map_err(|error| format!("{error:#}"))?;
     log::info!("Updated STT provider: {provider}");
     Ok(())
 }
@@ -278,7 +372,9 @@ pub async fn update_stt_provider(_app: AppHandle, _provider: String) -> Result<(
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_llm_provider(app: AppHandle, provider: String) -> Result<(), String> {
-    crate::save_setting_to_store(&app, StoreKey::LlmProvider, &provider)?;
+    // Provider settings are server-synced through RTVI from TypeScript, not Rust HTTP config sync.
+    persist_rtvi_synced_setting(&app, RtviSyncedSetting::LlmProvider, &provider)
+        .map_err(|error| format!("{error:#}"))?;
     log::info!("Updated LLM provider: {provider}");
     Ok(())
 }
@@ -293,7 +389,8 @@ pub async fn update_llm_provider(_app: AppHandle, _provider: String) -> Result<(
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_auto_mute_audio(app: AppHandle, enabled: bool) -> Result<(), String> {
-    crate::save_setting_to_store(&app, StoreKey::AutoMuteAudio, &enabled)?;
+    persist_local_only_setting(&app, LocalOnlySetting::AutoMuteAudio, &enabled)
+        .map_err(|error| format!("{error:#}"))?;
     log::info!("Updated auto mute audio: {enabled}");
     Ok(())
 }
@@ -313,7 +410,8 @@ pub async fn update_stt_timeout(
     config_sync: tauri::State<'_, crate::config_sync::ConfigSync>,
 ) -> Result<(), String> {
     // Save locally
-    crate::save_setting_to_store(&app, StoreKey::SttTimeoutSeconds, &timeout_seconds)?;
+    persist_http_synced_setting(&app, HttpSyncedSetting::SttTimeoutSeconds, &timeout_seconds)
+        .map_err(|error| format!("{error:#}"))?;
     log::info!("Updated STT timeout: {timeout_seconds:?}");
 
     // Sync to server
@@ -340,7 +438,8 @@ pub async fn update_stt_timeout(
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn update_server_url(app: AppHandle, url: String) -> Result<(), String> {
-    crate::save_setting_to_store(&app, StoreKey::ServerUrl, &url)?;
+    persist_local_only_setting(&app, LocalOnlySetting::ServerUrl, &url)
+        .map_err(|error| format!("{error:#}"))?;
     log::info!("Updated server URL: {url}");
     Ok(())
 }
@@ -360,7 +459,8 @@ pub async fn update_llm_formatting_enabled(
     config_sync: tauri::State<'_, crate::config_sync::ConfigSync>,
 ) -> Result<(), String> {
     // Save locally
-    crate::save_setting_to_store(&app, StoreKey::LlmFormattingEnabled, &enabled)?;
+    persist_http_synced_setting(&app, HttpSyncedSetting::LlmFormattingEnabled, &enabled)
+        .map_err(|error| format!("{error:#}"))?;
 
     // Log the change
     if enabled {
@@ -389,21 +489,61 @@ pub async fn update_llm_formatting_enabled(_app: AppHandle, _enabled: bool) -> R
     Ok(())
 }
 
+/// Update send active app context setting
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn update_send_active_app_context_enabled(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    persist_local_only_setting(
+        &app,
+        LocalOnlySetting::SendActiveAppContextEnabled,
+        &enabled,
+    )
+    .map_err(|error| format!("{error:#}"))?;
+
+    if let Err(error) = reconcile_focus_watcher_enabled_state(&app, enabled) {
+        log::warn!(
+            "Failed to reconcile focus watcher while updating send_active_app_context_enabled: {error:#}"
+        );
+    }
+
+    log::info!("Send active app context enabled: {enabled}");
+    Ok(())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+pub async fn update_send_active_app_context_enabled(
+    _app: AppHandle,
+    _enabled: bool,
+) -> Result<(), String> {
+    Ok(())
+}
+
 /// Reset all hotkeys to their default values
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn reset_hotkeys_to_defaults(app: AppHandle) -> Result<(), String> {
-    crate::save_setting_to_store(
+    persist_local_only_setting(
         &app,
-        StoreKey::ToggleHotkey,
+        LocalOnlySetting::ToggleHotkey,
         &HotkeyConfig::default_toggle(),
-    )?;
-    crate::save_setting_to_store(&app, StoreKey::HoldHotkey, &HotkeyConfig::default_hold())?;
-    crate::save_setting_to_store(
+    )
+    .map_err(|error| format!("{error:#}"))?;
+    persist_local_only_setting(
         &app,
-        StoreKey::PasteLastHotkey,
+        LocalOnlySetting::HoldHotkey,
+        &HotkeyConfig::default_hold(),
+    )
+    .map_err(|error| format!("{error:#}"))?;
+    persist_local_only_setting(
+        &app,
+        LocalOnlySetting::PasteLastHotkey,
         &HotkeyConfig::default_paste_last(),
-    )?;
+    )
+    .map_err(|error| format!("{error:#}"))?;
     log::info!("Reset all hotkeys to defaults");
     Ok(())
 }

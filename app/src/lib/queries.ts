@@ -40,20 +40,44 @@ function showSettingsError(message: string): void {
 	});
 }
 
+function showRuntimeApplyWarnings(
+	warnings: RuntimeApplyWarning[],
+	contextLabel: string,
+): void {
+	if (warnings.length === 0) {
+		return;
+	}
+
+	const warningSummaryMessage = warnings
+		.map((warning) => `${warning.setting_key}: ${warning.message}`)
+		.join(" | ");
+
+	notifications.show({
+		title: `${contextLabel} with Warnings`,
+		message: warningSummaryMessage,
+		color: "yellow",
+		autoClose: 7000,
+	});
+}
+
 import {
+	type ActiveAppContextSnapshot,
 	type AppSettings,
 	type AvailableProvidersData,
 	type CleanupPromptSections,
 	type ConnectionState,
 	configAPI,
 	type DetectedFileType,
+	type FactoryResetOutcome,
 	getProviderIdFromSelection,
 	type HistoryImportStrategy,
 	type HotkeyConfig,
+	type ImportSettingsOutcome,
 	type LLMProviderSelection,
 	type PromptSectionName,
 	parseLLMProviderSelection,
 	parseSTTProviderSelection,
+	type RuntimeApplyWarning,
 	type STTProviderSelection,
 	tauriAPI,
 	validateHotkeyNotDuplicate,
@@ -339,8 +363,15 @@ export function useHistory(limit?: number) {
 export function useAddHistoryEntry() {
 	const queryClient = useQueryClient();
 	return useMutation({
-		mutationFn: ({ text, rawText }: { text: string; rawText: string }) =>
-			tauriAPI.addHistoryEntry(text, rawText),
+		mutationFn: ({
+			text,
+			rawText,
+			activeAppContext,
+		}: {
+			text: string;
+			rawText: string;
+			activeAppContext?: ActiveAppContextSnapshot | null;
+		}) => tauriAPI.addHistoryEntry(text, rawText, activeAppContext),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["history"] });
 			// Notify other windows about history change
@@ -464,6 +495,27 @@ export function useUpdateLLMFormattingEnabled() {
 		},
 		onError: (error) => {
 			showSettingsError(`Failed to update LLM formatting: ${error.message}`);
+		},
+	});
+}
+
+// Active app context sending enabled mutation
+export function useUpdateSendActiveAppContextEnabled() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: (enabled: boolean) =>
+			tauriAPI.updateSendActiveAppContextEnabled(enabled),
+		onSuccess: (_data, enabled) => {
+			queryClient.invalidateQueries({ queryKey: ["settings"] });
+			tauriAPI.emitSettingsChanged();
+			showSettingsSuccess(
+				`Active app context ${enabled ? "enabled" : "disabled"} for formatting`,
+			);
+		},
+		onError: (error) => {
+			showSettingsError(
+				`Failed to update active app context setting: ${error.message}`,
+			);
 		},
 	});
 }
@@ -742,8 +794,8 @@ export function useImportData() {
 export function useImportSettings() {
 	const queryClient = useQueryClient();
 	return useMutation({
-		mutationFn: async (content: string) => {
-			await tauriAPI.importSettings(content);
+		mutationFn: async (content: string): Promise<ImportSettingsOutcome> => {
+			const importSettingsOutcome = await tauriAPI.importSettings(content);
 			await tauriAPI.registerShortcuts();
 
 			const settings = await tauriAPI.getSettings();
@@ -761,8 +813,10 @@ export function useImportSettings() {
 				parseLLMProviderSelection,
 				settings.llm_provider,
 			);
+
+			return importSettingsOutcome;
 		},
-		onSuccess: () => {
+		onSuccess: (importSettingsOutcome) => {
 			queryClient.invalidateQueries({ queryKey: ["settings"] });
 			queryClient.invalidateQueries({ queryKey: ["shortcutErrors"] });
 			tauriAPI.emitSettingsChanged();
@@ -772,6 +826,10 @@ export function useImportSettings() {
 				color: "green",
 				autoClose: 3000,
 			});
+			showRuntimeApplyWarnings(
+				importSettingsOutcome.warnings,
+				"Settings Imported",
+			);
 		},
 		onError: (error) => {
 			notifications.show({
@@ -863,8 +921,8 @@ export function useImportPrompt() {
 export function useFactoryReset() {
 	const queryClient = useQueryClient();
 	return useMutation({
-		mutationFn: async () => {
-			await tauriAPI.factoryReset();
+		mutationFn: async (): Promise<FactoryResetOutcome> => {
+			const factoryResetOutcome = await tauriAPI.factoryReset();
 			await tauriAPI.registerShortcuts();
 
 			const defaultProvider = "auto";
@@ -882,8 +940,10 @@ export function useFactoryReset() {
 				parseLLMProviderSelection,
 				defaultProvider,
 			);
+
+			return factoryResetOutcome;
 		},
-		onSuccess: () => {
+		onSuccess: (factoryResetOutcome) => {
 			queryClient.invalidateQueries({ queryKey: ["settings"] });
 			queryClient.invalidateQueries({ queryKey: ["history"] });
 			queryClient.invalidateQueries({ queryKey: ["shortcutErrors"] });
@@ -895,6 +955,10 @@ export function useFactoryReset() {
 				color: "green",
 				autoClose: 3000,
 			});
+			showRuntimeApplyWarnings(
+				factoryResetOutcome.warnings,
+				"Factory Reset Complete",
+			);
 		},
 		onError: (error) => {
 			notifications.show({

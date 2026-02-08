@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, RwLock};
 
+use crate::active_app_context::FocusWatcherHandle;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ShortcutState {
     #[default]
@@ -33,8 +35,18 @@ pub struct ShortcutRegistrationResult {
     pub errors: ShortcutErrors,
 }
 
-#[derive(Default)]
 pub struct AppState {
     pub shortcut_state: Mutex<ShortcutState>,
     pub shortcut_errors: RwLock<ShortcutErrors>,
+    pub focus_watcher: Mutex<Option<FocusWatcherHandle>>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            shortcut_state: Mutex::new(ShortcutState::default()),
+            shortcut_errors: RwLock::new(ShortcutErrors::default()),
+            focus_watcher: Mutex::new(None),
+        }
+    }
 }

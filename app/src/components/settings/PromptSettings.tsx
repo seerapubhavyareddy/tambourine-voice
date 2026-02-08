@@ -7,6 +7,7 @@ import {
 	useSettings,
 	useUpdateCleanupPromptSections,
 	useUpdateLLMFormattingEnabled,
+	useUpdateSendActiveAppContextEnabled,
 } from "../../lib/queries";
 import type { CleanupPromptSections, PromptSection } from "../../lib/tauri";
 import { PromptSectionEditor } from "./PromptSectionEditor";
@@ -26,9 +27,11 @@ export function PromptSettings() {
 		useDefaultSections();
 	const updateCleanupPromptSections = useUpdateCleanupPromptSections();
 	const llmFormattingMutation = useUpdateLLMFormattingEnabled();
+	const activeAppContextMutation = useUpdateSendActiveAppContextEnabled();
 
 	// Modal for warning when disabling LLM formatting
 	const [disableWarningOpened, disableWarningHandlers] = useDisclosure(false);
+	const [focusWarningOpened, focusWarningHandlers] = useDisclosure(false);
 
 	// Consolidated local state for all sections using discriminated union
 	const [localSections, setLocalSections] =
@@ -202,6 +205,19 @@ export function PromptSettings() {
 		disableWarningHandlers.close();
 	};
 
+	const handleActiveAppContextToggle = (checked: boolean) => {
+		if (checked) {
+			focusWarningHandlers.open();
+		} else {
+			activeAppContextMutation.mutate(false);
+		}
+	};
+
+	const confirmEnableActiveAppContext = () => {
+		activeAppContextMutation.mutate(true);
+		focusWarningHandlers.close();
+	};
+
 	return (
 		<div className="settings-section animate-in animate-in-delay-4">
 			<h3 className="settings-section-title">LLM Formatting</h3>
@@ -222,6 +238,29 @@ export function PromptSettings() {
 							handleLLMFormattingToggle(event.currentTarget.checked)
 						}
 						disabled={llmFormattingMutation.isPending}
+						size="md"
+						color="gray"
+					/>
+				</div>
+				<div className="settings-row">
+					<div>
+						<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+							<p className="settings-label">
+								Use Active App Context for Formatting
+							</p>
+							<StatusIndicator status={activeAppContextMutation.status} />
+						</div>
+						<p className="settings-description">
+							Share active app/window context with the server to improve
+							formatting quality
+						</p>
+					</div>
+					<Switch
+						checked={settings?.send_active_app_context_enabled ?? false}
+						onChange={(event) =>
+							handleActiveAppContextToggle(event.currentTarget.checked)
+						}
+						disabled={activeAppContextMutation.isPending}
 						size="md"
 						color="gray"
 					/>
@@ -346,6 +385,30 @@ export function PromptSettings() {
 					</Button>
 					<Button color="red" onClick={confirmDisableLLMFormatting}>
 						Disable Formatting
+					</Button>
+				</div>
+			</Modal>
+
+			{/* Warning modal when enabling active app context */}
+			<Modal
+				opened={focusWarningOpened}
+				onClose={focusWarningHandlers.close}
+				title="Enable active app context?"
+				centered
+				size="md"
+			>
+				<Text size="sm" mb="md">
+					This experimental feature can improve dictation quality by adapting
+					formatting to your active app or window. It might send personal data
+					about your active app/window to the server, and if you connect to a
+					cloud service, that data will be sent to the cloud service as well.
+				</Text>
+				<div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+					<Button variant="default" onClick={focusWarningHandlers.close}>
+						Cancel
+					</Button>
+					<Button color="orange" onClick={confirmEnableActiveAppContext}>
+						Enable Active App Context
 					</Button>
 				</div>
 			</Modal>

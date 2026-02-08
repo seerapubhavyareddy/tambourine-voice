@@ -5,6 +5,9 @@ import { Store } from "@tauri-apps/plugin-store";
 import ky from "ky";
 import { withoutTrailingSlash } from "ufo";
 import { z } from "zod";
+import type { ActiveAppContextSnapshot } from "./activeAppContext";
+
+export * from "./activeAppContext";
 
 // =============================================================================
 // Provider ID Constants - Single source of truth
@@ -277,17 +280,6 @@ export function getProviderIdFromSelection(
 // Setting Names (Forward-Compatible)
 // =============================================================================
 
-/**
- * Known setting names matching server's SettingName enum.
- * Used for type-safe handling of config responses.
- */
-export const KNOWN_SETTINGS = [
-	"stt-provider",
-	"llm-provider",
-	"prompt-sections",
-	"stt-timeout",
-] as const;
-
 export type {
 	ConfigResponse,
 	ConnectionState,
@@ -334,6 +326,7 @@ export interface HistoryEntry {
 	timestamp: string;
 	text: string;
 	raw_text: string;
+	active_app_context?: ActiveAppContextSnapshot | null;
 }
 
 // =============================================================================
@@ -351,6 +344,53 @@ export interface HistoryImportResult {
 	success: boolean;
 	entries_imported: number | null;
 	entries_skipped: number | null;
+}
+
+/** Warning from best-effort runtime setting application after import/reset. */
+export type RuntimeApplyWarningCode =
+	| "focus_watcher_reconcile_failed"
+	| "prompt_sections_sync_failed"
+	| "stt_timeout_sync_failed"
+	| "llm_formatting_sync_failed";
+
+export type RuntimeApplySettingKey = keyof Pick<
+	AppSettings,
+	| "send_active_app_context_enabled"
+	| "cleanup_prompt_sections"
+	| "stt_timeout_seconds"
+	| "llm_formatting_enabled"
+>;
+
+export type RuntimeApplyAction =
+	| "focus_watcher_enabled"
+	| "focus_watcher_disabled"
+	| "prompt_sections_synced"
+	| "stt_timeout_synced"
+	| "llm_formatting_synced";
+
+/** Warning from best-effort runtime setting application after import/reset. */
+export interface RuntimeApplyWarning {
+	code: RuntimeApplyWarningCode;
+	message: string;
+	setting_key: RuntimeApplySettingKey;
+}
+
+/** Runtime action that was successfully applied after import/reset. */
+export interface RuntimeActionApplied {
+	action: RuntimeApplyAction;
+	setting_key: RuntimeApplySettingKey;
+}
+
+/** Runtime setting application summary for settings import. */
+export interface ImportSettingsOutcome {
+	warnings: RuntimeApplyWarning[];
+	runtime_actions_applied: RuntimeActionApplied[];
+}
+
+/** Runtime setting application summary for factory reset. */
+export interface FactoryResetOutcome {
+	warnings: RuntimeApplyWarning[];
+	runtime_actions_applied: RuntimeActionApplied[];
 }
 
 /** Detected file type from import */
@@ -396,6 +436,8 @@ export interface AppSettings {
 	server_url: string;
 	/** LLM formatting enabled (true = format with LLM, false = raw transcription) */
 	llm_formatting_enabled: boolean;
+	/** Send active app context to server for prompt injection */
+	send_active_app_context_enabled: boolean;
 }
 
 export const DEFAULT_SERVER_URL = "http://127.0.0.1:8765";
@@ -555,6 +597,9 @@ export const tauriAPI = {
 	async updateLLMFormattingEnabled(enabled: boolean): Promise<void> {
 		return invoke("update_llm_formatting_enabled", { enabled });
 	},
+	async updateSendActiveAppContextEnabled(enabled: boolean): Promise<void> {
+		return invoke("update_send_active_app_context_enabled", { enabled });
+	},
 
 	async isAudioMuteSupported(): Promise<boolean> {
 		return invoke("is_audio_mute_supported");
@@ -583,8 +628,12 @@ export const tauriAPI = {
 		return invoke("set_hotkey_enabled", { hotkeyType, enabled });
 	},
 
-	async addHistoryEntry(text: string, rawText: string): Promise<HistoryEntry> {
-		return invoke("add_history_entry", { text, rawText });
+	async addHistoryEntry(
+		text: string,
+		rawText: string,
+		activeAppContext?: ActiveAppContextSnapshot | null,
+	): Promise<HistoryEntry> {
+		return invoke("add_history_entry", { text, rawText, activeAppContext });
 	},
 
 	async getHistory(limit?: number): Promise<HistoryEntry[]> {
@@ -703,6 +752,16 @@ export const tauriAPI = {
 		return listenEvent(AppEvents.providerChangeRequest, callback);
 	},
 
+	async onActiveAppContextChanged(
+		callback: (payload: ActiveAppContextSnapshot) => void,
+	): Promise<UnlistenFn> {
+		return listenEvent(AppEvents.activeAppContextChanged, callback);
+	},
+
+	async activeAppGetCurrentContext(): Promise<ActiveAppContextSnapshot> {
+		return invoke("active_app_get_current_context");
+	},
+
 	// Server connection state management (for Rust-side config syncing)
 	async setServerConnected(
 		serverUrl: string,
@@ -746,7 +805,7 @@ export const tauriAPI = {
 		return invoke("detect_export_file_type", { content });
 	},
 
-	async importSettings(content: string): Promise<void> {
+	async importSettings(content: string): Promise<ImportSettingsOutcome> {
 		return invoke("import_settings", { content });
 	},
 
@@ -757,7 +816,7 @@ export const tauriAPI = {
 		return invoke("import_history", { content, strategy });
 	},
 
-	async factoryReset(): Promise<void> {
+	async factoryReset(): Promise<FactoryResetOutcome> {
 		return invoke("factory_reset");
 	},
 };

@@ -25,6 +25,9 @@ import {
 } from "../../lib/queries";
 import type { HistoryImportStrategy } from "../../lib/tauri";
 
+// Notification timeout for warnings (in milliseconds)
+const NOTIFICATION_WARNING_TIMEOUT_MS = 5000;
+
 type ImportModalState =
 	| { type: "closed" }
 	| { type: "strategy"; historyFile: ParsedExportFile };
@@ -71,7 +74,7 @@ export function DataManagementSettings() {
 				title: "Unknown File Format",
 				message: `Could not recognize: ${unknownFiles.map((f) => f.filename).join(", ")}`,
 				color: "yellow",
-				autoClose: 5000,
+				autoClose: NOTIFICATION_WARNING_TIMEOUT_MS,
 			});
 		}
 

@@ -112,6 +112,24 @@ Example: `Feat: add support for Azure Speech provider`
 - Structure types to enable exhaustive matching when handling variants
 - Prefer **shared internal functions over factory patterns** when extracting common logic from hooks or functions—keep each export explicitly defined for better IDE navigation and readability
 
+#### Type Design Signals
+
+Use this as a quick feel for when types are not well utilized.
+
+- Finite value set -> union/enum instead of `string`
+- Mutually exclusive states -> state union/enum instead of many booleans
+- Function inputs that represent domain concepts -> use those domain types directly
+
+```text
+Under-modeled:
+  start_session(provider_id: string, is_recording: boolean, is_paused: boolean)
+
+Better modeled:
+  ProviderId = "deepgram" | "assemblyai" | "whisper"
+  SessionState = "idle" | "recording" | "paused" | "error"
+  start_session(provider_id: ProviderId, session_state: SessionState)
+```
+
 ### Forward Compatibility
 
 Client and server should evolve independently:

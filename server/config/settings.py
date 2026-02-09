@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     whisper_enabled: bool = Field(
         False, description="Enable local Whisper STT (requires model setup)"
     )
+    whisper_device: str | None = Field(
+        None, description="Device for local Whisper STT (cpu|cuda, optional)"
+    )
+    whisper_model: str | None = Field(
+        None, description="Model for local Whisper STT (tiny|base|small|medium|large, optional)"
+    )
     nemotron_asr_url: str | None = Field(
         None, description="Nemotron ASR WebSocket URL (ws:// or wss://)"
     )

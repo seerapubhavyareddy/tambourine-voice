@@ -7,7 +7,6 @@ at startup instead of runtime failures.
 Provider ID enums are defined in protocol.providers (single source of truth).
 """
 
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
@@ -285,13 +284,13 @@ STT_PROVIDERS: Final[dict[STTProviderId, STTProviderConfig]] = {
         provider_id=STTProviderId.WHISPER,
         display_name="Whisper",
         service_class=WhisperSTTService,
-        credential_mapper=NoAuthMapper(availability_fields=("whisper_enabled",)),
-        # Allow configuring model and device via env vars: WHISPER_MODEL (e.g., tiny, base, small)
-        # and WHISPER_DEVICE (cpu|cuda). Defaults: model='tiny', device='cuda'.
-        default_kwargs={
-            "model": os.environ.get("WHISPER_MODEL", "medium"),
-            "device": os.environ.get("WHISPER_DEVICE", "cuda"),
-        },
+        credential_mapper=NoAuthMapper(
+            availability_fields=("whisper_enabled",),
+            field_mapping={
+                "whisper_model": "model",
+                "whisper_device": "device",
+            },
+        ),
     ),
 }
 

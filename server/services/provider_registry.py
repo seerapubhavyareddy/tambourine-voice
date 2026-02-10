@@ -284,7 +284,13 @@ STT_PROVIDERS: Final[dict[STTProviderId, STTProviderConfig]] = {
         provider_id=STTProviderId.WHISPER,
         display_name="Whisper",
         service_class=WhisperSTTService,
-        credential_mapper=NoAuthMapper(availability_fields=("whisper_enabled",)),
+        credential_mapper=NoAuthMapper(
+            availability_fields=("whisper_enabled",),
+            field_mapping={
+                "whisper_model": "model",
+                "whisper_device": "device",
+            },
+        ),
     ),
 }
 

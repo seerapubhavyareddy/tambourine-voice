@@ -212,6 +212,12 @@ uv run python main.py --verbose
 ## Docker Deployment
 
 Run the server in Docker instead of installing Python dependencies locally.
+Server requires network mode to be host due to RTP server's random port assignments. 
+
+To use GPU accelleration for a locally hosted Whisper model you need to setup GPU access for your container daemon
+
+https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html#installing-with-yum-or-dnf
+https://podman-desktop.io/docs/podman/gpu
 
 ```bash
 cd server
@@ -261,6 +267,8 @@ See `server/main.py` and `server/api/config_api.py` for all endpoints. All endpo
 ### Server Configuration (.env)
 
 Copy `.env.example` to `.env` and add API keys for at least one STT and one LLM provider. See the example file for all supported providers including Deepgram, Cartesia, OpenAI, Anthropic, Cerebras, Groq, AWS, and more. Additional [Pipecat-supported providers](https://docs.pipecat.ai/server/services/supported-services) can be added easily.
+
+New: You can optionally configure Silero VAD parameters via environment variables (see `server/.env.example` for `VAD_SAMPLE_RATE`, `VAD_CONFIDENCE`, `VAD_START_SECS`, `VAD_STOP_SECS`, and `VAD_MIN_VOLUME`).
 
 ### App Configuration
 

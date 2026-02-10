@@ -183,7 +183,7 @@ class DictationContextManager:
                     f"{sanitized_active_app_context_block}"
                 )
             case None:
-                logger.info("Sanitized active app context for prompt injection: None")
+                logger.debug("Sanitized active app context for prompt injection: None")
 
     def _format_untrusted_focus_value(
         self, sanitized_focus_text: SanitizedFocusText | None

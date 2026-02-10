@@ -37,6 +37,7 @@ __all__ = [
     "get_stt_provider_labels",
 ]
 
+
 def _create_stt_service_from_config(
     config: STTProviderConfig,
     settings: "Settings",

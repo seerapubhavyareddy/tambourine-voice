@@ -292,9 +292,6 @@ STT_PROVIDERS: Final[dict[STTProviderId, STTProviderConfig]] = {
                 "whisper_compute_type": "compute_type",
             },
         ),
-        # Use a lighter local default to reduce end-to-end latency on CPU setups.
-        # The previous default model is accurate but often too slow for interactive dictation.
-        default_kwargs={"model": "small", "compute_type": "int8"},
     ),
 }
 

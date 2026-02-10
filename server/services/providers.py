@@ -70,8 +70,7 @@ def _create_stt_service_from_config(
     logger.info(f"Creating STT service: {config.provider_id.value}")
 
     # Direct instantiation - service_class is type-checked at import time
-    service = config.service_class(**kwargs)
-    return service
+    return config.service_class(**kwargs)
 
 
 def _create_llm_service_from_config(
@@ -102,16 +101,6 @@ def _create_llm_service_from_config(
     # Credential-mapped values (e.g., from .env) must win over defaults.
     kwargs = dict(config.default_kwargs)
     kwargs.update(config.credential_mapper.map_credentials(settings))
-
-    # Normalize OLLAMA base_url to OpenAI-compatible endpoint.
-    # Many local setups use http://localhost:11434, while the OpenAI client
-    # expects /v1 endpoints (e.g., /v1/chat/completions).
-    if config.provider_id == LLMProviderId.OLLAMA:
-        base_url = kwargs.get("base_url")
-        if isinstance(base_url, str):
-            normalized = base_url.rstrip("/")
-            if not normalized.endswith("/v1"):
-                kwargs["base_url"] = f"{normalized}/v1"
 
     logger.info(f"Creating LLM service: {config.provider_id.value}")
 

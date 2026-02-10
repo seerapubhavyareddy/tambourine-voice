@@ -117,8 +117,4 @@ class LLMGateFilter(FrameProcessor):
                     await self.push_frame(frame, direction)
         else:
             # LLM enabled - pass everything through
-            match frame:
-                case UserStoppedSpeakingFrame():
-                    await self.push_frame(frame, direction)
-                case _:
-                    await self.push_frame(frame, direction)
+            await self.push_frame(frame, direction)

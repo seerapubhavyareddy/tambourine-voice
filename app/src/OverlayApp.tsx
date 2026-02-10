@@ -284,31 +284,6 @@ function RecordingControl() {
 	const { start: startResponseTimeout, clear: clearResponseTimeout } =
 		useTimeout(() => {
 			if (displayState === "processing") {
-				const fallbackRawText = rawTranscriptionRef.current.trim();
-				const activeAppContextSentForCurrentRecording =
-					activeAppContextSentForCurrentRecordingRef.current;
-
-				if (fallbackRawText) {
-					void typeTextMutation
-						.mutateAsync(fallbackRawText)
-						.catch((error: unknown) => {
-							console.error(
-								"[Pipecat] Failed to type timeout fallback raw text:",
-								error,
-							);
-						});
-					addHistoryEntry.mutate({
-						text: fallbackRawText,
-						rawText: fallbackRawText,
-						activeAppContext: activeAppContextSentForCurrentRecording,
-					});
-				}
-
-				// Clear accumulators to prevent duplicate insertion if delayed LLM events arrive.
-				streamedLlmResponseChunksRef.current = "";
-				rawTranscriptionRef.current = "";
-				activeAppContextSentForCurrentRecordingRef.current = null;
-
 				// Show simple error in overlay
 				setShowError(true);
 
@@ -544,10 +519,6 @@ function RecordingControl() {
 	]);
 
 	const onStopRecording = useCallback(() => {
-		if (displayState === "processing") {
-			return;
-		}
-
 		setIsMicAcquiring(false);
 		micPreparedRef.current = false;
 
@@ -885,18 +856,6 @@ function RecordingControl() {
 				}
 				addHistoryEntry.mutate({
 					text,
-					rawText,
-					activeAppContext: activeAppContextSentForCurrentRecording,
-				});
-			} else if (rawText) {
-				// Fallback: if formatting LLM returns empty text, preserve user dictation.
-				try {
-					await typeTextMutation.mutateAsync(rawText);
-				} catch (error) {
-					console.error("[Pipecat] Failed to type raw fallback text:", error);
-				}
-				addHistoryEntry.mutate({
-					text: rawText,
 					rawText,
 					activeAppContext: activeAppContextSentForCurrentRecording,
 				});

@@ -48,7 +48,6 @@ class PipelineLogObserver(BaseObserver):
         self._audio_frame_count: int = 0
         # Track speaking state to deduplicate speech events from multiple sources
         self._is_speaking: bool = False
-        self._llm_chunk_count: int = 0
 
     async def on_push_frame(self, data: FramePushed) -> None:
         """Handle frame push events and log key pipeline activities.
@@ -93,11 +92,9 @@ class PipelineLogObserver(BaseObserver):
             case (LLMFullResponseStartFrame(), LLMService()):
                 self._llm_accumulator = ""
                 self._is_accumulating = True
-                self._llm_chunk_count = 0
 
             case (LLMTextFrame() as f, LLMService()) if self._is_accumulating:
                 self._llm_accumulator += f.text
-                self._llm_chunk_count += 1
 
             case (LLMFullResponseEndFrame(), LLMService()):
                 self._is_accumulating = False

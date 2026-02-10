@@ -30,7 +30,6 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from protocol.messages import RawTranscriptionMessage, RecordingCompleteMessage
 from utils.logger import logger
 
-
 class LLMGateFilter(FrameProcessor):
     """Gates frames to LLM aggregator and handles bypass output.
 
@@ -117,4 +116,8 @@ class LLMGateFilter(FrameProcessor):
                     await self.push_frame(frame, direction)
         else:
             # LLM enabled - pass everything through
-            await self.push_frame(frame, direction)
+            match frame:
+                case UserStoppedSpeakingFrame():
+                    await self.push_frame(frame, direction)
+                case _:
+                    await self.push_frame(frame, direction)

@@ -30,6 +30,7 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from protocol.messages import RawTranscriptionMessage, RecordingCompleteMessage
 from utils.logger import logger
 
+
 class LLMGateFilter(FrameProcessor):
     """Gates frames to LLM aggregator and handles bypass output.
 

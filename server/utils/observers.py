@@ -25,6 +25,7 @@ from pipecat.transports.base_output import BaseOutputTransport
 
 from utils.logger import logger
 
+
 class PipelineLogObserver(BaseObserver):
     """Observer that logs key pipeline events at INFO level.
 

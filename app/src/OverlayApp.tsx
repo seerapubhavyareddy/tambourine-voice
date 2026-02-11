@@ -242,6 +242,8 @@ function RecordingControl() {
 	const connectionState = useConnectionState();
 	const send = useConnectionSend();
 	const displayState = getDisplayState(connectionState);
+	const displayStateRef = useRef<DisplayState>(displayState);
+	const llmTimeoutRawFallbackEnabledRef = useRef<boolean>(false);
 
 	// Use Mantine's useResizeObserver hook
 	const [containerRef, rect] = useResizeObserver();
@@ -274,16 +276,73 @@ function RecordingControl() {
 
 	const streamedLlmResponseChunksRef = useRef("");
 	const rawTranscriptionRef = useRef("");
+	const isTurnFinalizedRef = useRef(false);
 
 	const typeTextMutation = useTypeText();
 	const addHistoryEntry = useAddHistoryEntry();
+
+	const finalizeTurnIfPending = useCallback((): boolean => {
+		if (isTurnFinalizedRef.current) {
+			return false;
+		}
+		isTurnFinalizedRef.current = true;
+		return true;
+	}, []);
+
+	const insertRawFallbackIfEnabled = useCallback(
+		async (reason: "timeout"): Promise<boolean> => {
+			const fallbackEnabled = llmTimeoutRawFallbackEnabledRef.current;
+			const rawText = rawTranscriptionRef.current.trim();
+			const activeAppContextSentForCurrentRecording =
+				activeAppContextSentForCurrentRecordingRef.current;
+
+			// Prevent delayed events from reusing turn-local buffers.
+			streamedLlmResponseChunksRef.current = "";
+			rawTranscriptionRef.current = "";
+
+			if (!(fallbackEnabled && rawText)) {
+				return false;
+			}
+
+			console.debug(
+				`[Pipecat] ${reason} fallback to raw transcription:`,
+				rawText,
+			);
+			try {
+				await typeTextMutation.mutateAsync(rawText);
+			} catch (error) {
+				console.error("[Pipecat] Failed to type fallback text:", error);
+			}
+			addHistoryEntry.mutate({
+				text: rawText,
+				rawText,
+				activeAppContext: activeAppContextSentForCurrentRecording,
+			});
+			activeAppContextSentForCurrentRecordingRef.current = null;
+			return true;
+		},
+		[typeTextMutation, addHistoryEntry],
+	);
 
 	// Error display state (persists until user records again)
 	const [showError, setShowError] = useState(false);
 
 	const { start: startResponseTimeout, clear: clearResponseTimeout } =
 		useTimeout(() => {
-			if (displayState === "processing") {
+			const currentDisplayState = displayStateRef.current;
+			if (currentDisplayState !== "processing") {
+				return;
+			}
+			if (!finalizeTurnIfPending()) {
+				return;
+			}
+
+			const tryRawTimeoutFallback = async () => {
+				if (await insertRawFallbackIfEnabled("timeout")) {
+					send({ type: "RESPONSE_RECEIVED" });
+					return;
+				}
+
 				// Show simple error in overlay
 				setShowError(true);
 
@@ -292,13 +351,22 @@ function RecordingControl() {
 					message: "Response timed out - the server took too long to respond",
 					fatal: false,
 				});
-
+				activeAppContextSentForCurrentRecordingRef.current = null;
 				send({ type: "RESPONSE_RECEIVED" });
-			}
+			};
+
+			void tryRawTimeoutFallback();
 		}, SERVER_RESPONSE_TIMEOUT_MS);
 
-	// Clear response timeout when leaving processing state (reconnection, disconnection, etc.)
-	// This prevents the timeout from firing after we've already transitioned away
+	useEffect(() => {
+		displayStateRef.current = displayState;
+	}, [displayState]);
+
+	useEffect(() => {
+		llmTimeoutRawFallbackEnabledRef.current =
+			settings?.llm_timeout_raw_fallback_enabled === true;
+	}, [settings?.llm_timeout_raw_fallback_enabled, settings?.llm_formatting_enabled]);
+
 	useEffect(() => {
 		if (displayState !== "processing") {
 			clearResponseTimeout();
@@ -346,6 +414,7 @@ function RecordingControl() {
 			// because UserTranscript events arrive DURING recording, before LLM processes
 			streamedLlmResponseChunksRef.current = "";
 			rawTranscriptionRef.current = "";
+			isTurnFinalizedRef.current = false;
 			activeAppContextSentForCurrentRecordingRef.current = null;
 
 			// Always show loading indicator during mic acquisition and recording start
@@ -842,6 +911,9 @@ function RecordingControl() {
 	useRTVIClientEvent(
 		RTVIEvent.BotLlmStopped,
 		useCallback(async () => {
+			if (!finalizeTurnIfPending()) {
+				return;
+			}
 			clearResponseTimeout();
 			const text = streamedLlmResponseChunksRef.current.trim();
 			const rawText = rawTranscriptionRef.current.trim();
@@ -866,7 +938,13 @@ function RecordingControl() {
 			}
 			activeAppContextSentForCurrentRecordingRef.current = null;
 			send({ type: "RESPONSE_RECEIVED" });
-		}, [clearResponseTimeout, typeTextMutation, addHistoryEntry, send]),
+		}, [
+			clearResponseTimeout,
+			typeTextMutation,
+			addHistoryEntry,
+			send,
+			finalizeTurnIfPending,
+		]),
 	);
 
 	// Server message handler (for custom messages: config-updated, recording-complete, raw-transcription, etc.)
@@ -879,11 +957,17 @@ function RecordingControl() {
 
 				match(parsed)
 					.with({ type: "recording-complete" }, () => {
+						if (!finalizeTurnIfPending()) {
+							return;
+						}
 						clearResponseTimeout();
 						activeAppContextSentForCurrentRecordingRef.current = null;
 						send({ type: "RESPONSE_RECEIVED" });
 					})
 					.with({ type: "raw-transcription" }, async ({ text }) => {
+						if (!finalizeTurnIfPending()) {
+							return;
+						}
 						// Raw transcription received (LLM bypassed)
 						clearResponseTimeout();
 						const activeAppContextSentForCurrentRecording =
@@ -930,7 +1014,13 @@ function RecordingControl() {
 					})
 					.exhaustive();
 			},
-			[clearResponseTimeout, send, typeTextMutation, addHistoryEntry],
+			[
+				clearResponseTimeout,
+				send,
+				typeTextMutation,
+				addHistoryEntry,
+				finalizeTurnIfPending,
+			],
 		),
 	);
 
@@ -956,6 +1046,7 @@ function RecordingControl() {
 
 					// Return to idle if in processing state (error means no content coming)
 					if (displayState === "processing") {
+						finalizeTurnIfPending();
 						clearResponseTimeout();
 						activeAppContextSentForCurrentRecordingRef.current = null;
 						send({ type: "RESPONSE_RECEIVED" });
@@ -970,7 +1061,7 @@ function RecordingControl() {
 					}
 				}
 			},
-			[send, displayState, clearResponseTimeout],
+			[send, displayState, clearResponseTimeout, finalizeTurnIfPending],
 		),
 	);
 

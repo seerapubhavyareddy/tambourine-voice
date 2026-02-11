@@ -336,7 +336,9 @@ function RecordingControl() {
 	}, []);
 
 	const insertRawFallbackIfEnabled = useCallback(
-		async (reason: "timeout"): Promise<boolean> => {
+		async (
+			reason: "timeout" | "server-error" | "empty-final-text",
+		): Promise<boolean> => {
 			const fallbackEnabled = llmTimeoutRawFallbackEnabledRef.current;
 			const rawText = rawTranscriptionRef.current.trim();
 			const activeAppContextSentForCurrentRecording =
@@ -977,8 +979,6 @@ function RecordingControl() {
 			const rawText = rawTranscriptionRef.current.trim();
 			const activeAppContextSentForCurrentRecording =
 				activeAppContextSentForCurrentRecordingRef.current;
-			streamedLlmResponseChunksRef.current = "";
-			rawTranscriptionRef.current = "";
 
 			if (text) {
 				console.debug("[Pipecat] LLM response:", text);
@@ -993,6 +993,17 @@ function RecordingControl() {
 					rawText,
 					activeAppContext: activeAppContextSentForCurrentRecording,
 				});
+				streamedLlmResponseChunksRef.current = "";
+				rawTranscriptionRef.current = "";
+			} else if (!(await insertRawFallbackIfEnabled("empty-final-text"))) {
+				setShowError(true);
+				tauriAPI.emitLLMError({
+					message: "Response was empty - no text was generated",
+					fatal: false,
+				});
+				activeAppContextSentForCurrentRecordingRef.current = null;
+				streamedLlmResponseChunksRef.current = "";
+				rawTranscriptionRef.current = "";
 			}
 			activeAppContextSentForCurrentRecordingRef.current = null;
 			send({ type: "RESPONSE_RECEIVED" });
@@ -1002,6 +1013,7 @@ function RecordingControl() {
 			addHistoryEntry,
 			send,
 			finalizeTurnIfPending,
+			insertRawFallbackIfEnabled,
 		]),
 	);
 
@@ -1096,21 +1108,38 @@ function RecordingControl() {
 					const errorData = parsed.data.data;
 					const message = errorData?.message ?? "Unknown error";
 
-					// Show simple "Try again" in overlay
-					setShowError(true);
-
-					// Send detailed error to main window toast
-					tauriAPI.emitLLMError({
-						message,
-						fatal: errorData?.fatal ?? false,
-					});
-
 					// Return to idle if in processing state (error means no content coming)
 					if (displayState === "processing") {
-						finalizeTurnIfPending();
+						if (!finalizeTurnIfPending()) {
+							return;
+						}
 						clearResponseTimeout();
-						activeAppContextSentForCurrentRecordingRef.current = null;
-						send({ type: "RESPONSE_RECEIVED" });
+
+						const tryRawErrorFallback = async () => {
+							if (await insertRawFallbackIfEnabled("server-error")) {
+								send({ type: "RESPONSE_RECEIVED" });
+								return;
+							}
+
+							// Show simple "Try again" in overlay
+							setShowError(true);
+
+							// Send detailed error to main window toast
+							tauriAPI.emitLLMError({
+								message,
+								fatal: errorData?.fatal ?? false,
+							});
+							activeAppContextSentForCurrentRecordingRef.current = null;
+							send({ type: "RESPONSE_RECEIVED" });
+						};
+						void tryRawErrorFallback();
+					} else {
+						// Outside processing, just surface the error in UI and main window.
+						setShowError(true);
+						tauriAPI.emitLLMError({
+							message,
+							fatal: errorData?.fatal ?? false,
+						});
 					}
 
 					// Fatal errors also trigger reconnection after showing the error
@@ -1122,7 +1151,13 @@ function RecordingControl() {
 					}
 				}
 			},
-			[send, displayState, clearResponseTimeout, finalizeTurnIfPending],
+			[
+				send,
+				displayState,
+				clearResponseTimeout,
+				finalizeTurnIfPending,
+				insertRawFallbackIfEnabled,
+			],
 		),
 	);
 

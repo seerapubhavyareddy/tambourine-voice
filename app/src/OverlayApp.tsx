@@ -414,7 +414,7 @@ function RecordingControl() {
 	useEffect(() => {
 		llmTimeoutRawFallbackEnabledRef.current =
 			settings?.llm_timeout_raw_fallback_enabled === true;
-	}, [settings?.llm_timeout_raw_fallback_enabled, settings?.llm_formatting_enabled]);
+	}, [settings?.llm_timeout_raw_fallback_enabled]);
 	const { start: startOverlayNoticeTimeout, clear: clearOverlayNoticeTimeout } =
 		useTimeout(() => {
 			setOverlayNoticeMessage(null);

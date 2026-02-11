@@ -36,6 +36,7 @@ import type { ConnectionMachineStateValue } from "./machines/connectionMachine";
 import "./overlay-global.css";
 
 const SERVER_RESPONSE_TIMEOUT_MS = 10_000;
+const EMPTY_RECORDING_NOTICE_TIMEOUT_MS = 2_000;
 const NATIVE_AUDIO_FIRST_FRAME_READY_TIMEOUT_MS = 500;
 const PIPECAT_LOCAL_PARTICIPANT = {
 	id: "local",
@@ -43,11 +44,10 @@ const PIPECAT_LOCAL_PARTICIPANT = {
 	local: true,
 } as const;
 
-// Server message schemas as a discriminated union for single-parse handling
-const KnownServerMessageSchema = z.discriminatedUnion("type", [
+// Custom payload schemas carried via RTVIEvent.ServerMessage
+const KnownRTVICustomServerMessageSchema = z.discriminatedUnion("type", [
 	z.object({
-		type: z.literal("recording-complete"),
-		hasContent: z.boolean().optional(),
+		type: z.literal("recording-complete-with-zero-words"),
 	}),
 	// Raw transcription (LLM bypassed) - sent when LLM formatting is disabled
 	z.object({
@@ -55,7 +55,7 @@ const KnownServerMessageSchema = z.discriminatedUnion("type", [
 		text: z.string(),
 	}),
 	// Provider switching uses RTVI (requires frame injection into pipeline)
-	// z.enum() validates known settings; unknown settings become UnknownServerMessage
+	// z.enum() validates known settings; unknown settings become UnknownRTVICustomServerMessage
 	z.object({
 		type: z.literal("config-updated"),
 		setting: z.string(),
@@ -69,36 +69,40 @@ const KnownServerMessageSchema = z.discriminatedUnion("type", [
 	}),
 ]);
 
-type KnownServerMessage = z.infer<typeof KnownServerMessageSchema>;
+type KnownRTVICustomServerMessage = z.infer<
+	typeof KnownRTVICustomServerMessageSchema
+>;
 
 /**
- * Unknown server message type (forward compatibility).
+ * Unknown RTVI custom server message type (forward compatibility).
  *
  * Preserves the raw message data for debugging, similar to
  * UnknownClientMessage pattern on the server side.
  */
-type UnknownServerMessage = {
+type UnknownRTVICustomServerMessage = {
 	type: "unknown";
 	originalType: string;
 	raw: unknown;
 };
 
-type ServerMessage = KnownServerMessage | UnknownServerMessage;
+type RTVICustomServerMessage =
+	| KnownRTVICustomServerMessage
+	| UnknownRTVICustomServerMessage;
 
 /**
- * Parse server message with forward compatibility.
+ * Parse RTVI custom server message with forward compatibility.
  *
- * Returns UnknownServerMessage for unknown types (never null).
+ * Returns UnknownRTVICustomServerMessage for unknown types (never null).
  * This allows exhaustive pattern matching while preserving raw data
  * for debugging purposes.
  */
-function parseServerMessage(raw: unknown): ServerMessage {
-	const result = KnownServerMessageSchema.safeParse(raw);
+function parseRTVICustomServerMessage(raw: unknown): RTVICustomServerMessage {
+	const result = KnownRTVICustomServerMessageSchema.safeParse(raw);
 	if (!result.success) {
 		const originalType = (raw as { type?: string })?.type ?? "";
 		// Log at warn level so it's visible by default in devtools
 		console.warn(
-			"[Pipecat] Failed to parse server message:",
+			"[Pipecat] Failed to parse RTVI custom server message:",
 			originalType,
 			"\nRaw:",
 			raw,
@@ -190,6 +194,48 @@ const ErrorDisplay = ({
 			}}
 		>
 			Try again
+		</span>
+	</button>
+);
+
+const OverlayNotice = ({
+	message,
+	onDismiss,
+	onStartRecording,
+}: {
+	message: string;
+	onDismiss: () => void;
+	onStartRecording?: () => void;
+}) => (
+	<button
+		type="button"
+		onClick={() => {
+			onDismiss();
+			onStartRecording?.();
+		}}
+		style={{
+			minWidth: 48,
+			width: "fit-content",
+			minHeight: 48,
+			display: "flex",
+			alignItems: "center",
+			justifyContent: "center",
+			cursor: "pointer",
+			padding: "4px 10px",
+			background: "none",
+			border: "none",
+		}}
+	>
+		<span
+			style={{
+				fontSize: 11,
+				color: "#d1d5db",
+				textAlign: "center",
+				lineHeight: 1.2,
+				whiteSpace: "nowrap",
+			}}
+		>
+			{message}
 		</span>
 	</button>
 );
@@ -326,6 +372,9 @@ function RecordingControl() {
 
 	// Error display state (persists until user records again)
 	const [showError, setShowError] = useState(false);
+	const [overlayNoticeMessage, setOverlayNoticeMessage] = useState<
+		string | null
+	>(null);
 
 	const { start: startResponseTimeout, clear: clearResponseTimeout } =
 		useTimeout(() => {
@@ -366,7 +415,13 @@ function RecordingControl() {
 		llmTimeoutRawFallbackEnabledRef.current =
 			settings?.llm_timeout_raw_fallback_enabled === true;
 	}, [settings?.llm_timeout_raw_fallback_enabled, settings?.llm_formatting_enabled]);
+	const { start: startOverlayNoticeTimeout, clear: clearOverlayNoticeTimeout } =
+		useTimeout(() => {
+			setOverlayNoticeMessage(null);
+		}, EMPTY_RECORDING_NOTICE_TIMEOUT_MS);
 
+	// Clear response timeout when leaving processing state (reconnection, disconnection, etc.)
+	// This prevents the timeout from firing after we've already transitioned away
 	useEffect(() => {
 		if (displayState !== "processing") {
 			clearResponseTimeout();
@@ -408,6 +463,8 @@ function RecordingControl() {
 		const startRecordingFromMachineState = async () => {
 			// Clear error state when starting recording
 			setShowError(false);
+			setOverlayNoticeMessage(null);
+			clearOverlayNoticeTimeout();
 
 			// Reset accumulators for new recording
 			// Important: rawTranscriptionRef is reset here (not on BotLlmStarted)
@@ -580,6 +637,7 @@ function RecordingControl() {
 		settings?.selected_mic_id,
 		settings?.send_active_app_context_enabled,
 		connectionActor,
+		clearOverlayNoticeTimeout,
 		getCurrentNativeAudioTrack,
 		send,
 		startNativeCapture,
@@ -947,20 +1005,22 @@ function RecordingControl() {
 		]),
 	);
 
-	// Server message handler (for custom messages: config-updated, recording-complete, raw-transcription, etc.)
+	// RTVI ServerMessage handler for custom payloads
 	useRTVIClientEvent(
 		RTVIEvent.ServerMessage,
 		useCallback(
 			async (message: unknown) => {
 				// Use forward-compatible parser (never returns null)
-				const parsed = parseServerMessage(message);
+				const parsed = parseRTVICustomServerMessage(message);
 
 				match(parsed)
-					.with({ type: "recording-complete" }, () => {
+					.with({ type: "recording-complete-with-zero-words" }, () => {
 						if (!finalizeTurnIfPending()) {
 							return;
 						}
 						clearResponseTimeout();
+						setOverlayNoticeMessage("No words detected");
+						startOverlayNoticeTimeout();
 						activeAppContextSentForCurrentRecordingRef.current = null;
 						send({ type: "RESPONSE_RECEIVED" });
 					})
@@ -1010,7 +1070,7 @@ function RecordingControl() {
 						});
 					})
 					.with({ type: "unknown" }, () => {
-						// Already logged at warn level in parseServerMessage
+						// Already logged at warn level in parseRTVICustomServerMessage
 					})
 					.exhaustive();
 			},
@@ -1020,6 +1080,7 @@ function RecordingControl() {
 				typeTextMutation,
 				addHistoryEntry,
 				finalizeTurnIfPending,
+				startOverlayNoticeTimeout,
 			],
 		),
 	);
@@ -1116,21 +1177,23 @@ function RecordingControl() {
 	);
 
 	// Determine view state for render
-	const viewState = showError
-		? ("error" as const)
-		: isMicAcquiring
-			? ("loading" as const)
-			: match(displayState)
-					.with(
-						"startingRecording",
-						"processing",
-						"disconnected",
-						"connecting",
-						"reconnecting",
-						() => "loading" as const,
-					)
-					.with("idle", "recording", () => "active" as const)
-					.exhaustive();
+	const viewState = (() => {
+		if (showError) return "error" as const;
+		if (isMicAcquiring) return "loading" as const;
+		if (overlayNoticeMessage) return "informational" as const;
+
+		return match(displayState)
+			.with(
+				"startingRecording",
+				"processing",
+				"disconnected",
+				"connecting",
+				"reconnecting",
+				() => "loading" as const,
+			)
+			.with("idle", "recording", () => "active" as const)
+			.exhaustive();
+	})();
 
 	return (
 		<div
@@ -1153,6 +1216,18 @@ function RecordingControl() {
 				.with("error", () => (
 					<ErrorDisplay
 						onDismiss={() => setShowError(false)}
+						onStartRecording={
+							displayState === "idle" ? onStartRecording : undefined
+						}
+					/>
+				))
+				.with("informational", () => (
+					<OverlayNotice
+						message={overlayNoticeMessage ?? ""}
+						onDismiss={() => {
+							setOverlayNoticeMessage(null);
+							clearOverlayNoticeTimeout();
+						}}
 						onStartRecording={
 							displayState === "idle" ? onStartRecording : undefined
 						}

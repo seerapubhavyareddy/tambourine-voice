@@ -7,7 +7,7 @@ This module provides type-safe message handling with:
 
 Message flow:
 - Client → Server: RecordingMessage | ConfigMessage (via RTVI data channel)
-- Server → Client: ServerMessage (via RTVIServerMessageFrame)
+- Server → Client: RTVICustomServerMessage (via RTVIServerMessageFrame)
 """
 
 from collections.abc import Mapping
@@ -279,11 +279,10 @@ def parse_client_message(raw: Mapping[str, object]) -> _ClientMessageUnion | Unk
 # =============================================================================
 
 
-class RecordingCompleteMessage(BaseModel):
+class EmptyTranscriptMessage(BaseModel):
     """Server notification that recording processing is complete (no content)."""
 
-    type: Literal["recording-complete"] = "recording-complete"
-    hasContent: bool = False
+    type: Literal["recording-complete-with-zero-words"] = "recording-complete-with-zero-words"
 
 
 class RawTranscriptionMessage(BaseModel):
@@ -314,7 +313,7 @@ class ConfigErrorMessage(BaseModel):
     error: str
 
 
-ServerMessage = Annotated[
-    RecordingCompleteMessage | RawTranscriptionMessage | ConfigUpdatedMessage | ConfigErrorMessage,
+RTVICustomServerMessage = Annotated[
+    EmptyTranscriptMessage | RawTranscriptionMessage | ConfigUpdatedMessage | ConfigErrorMessage,
     Field(discriminator="type"),
 ]

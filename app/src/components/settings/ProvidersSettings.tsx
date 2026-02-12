@@ -8,6 +8,7 @@ import {
 	useUpdateSTTTimeout,
 } from "../../lib/queries";
 import type { ProviderInfo } from "../../lib/tauri";
+import { useRecordingStore } from "../../stores/recordingStore";
 import { StatusIndicator } from "./StatusIndicator";
 
 // Match server's DEFAULT_TRANSCRIPTION_WAIT_TIMEOUT_SECONDS
@@ -31,6 +32,27 @@ interface SelectOption {
 interface GroupedSelectOptions {
 	group: string;
 	items: SelectOption[];
+}
+
+function normalizeProviderValue(value: string | null | undefined): string | null {
+	if (typeof value !== "string") return null;
+	const normalized = value.trim();
+	return normalized.length > 0 ? normalized : null;
+}
+
+function resolveProviderDisplayValue(
+	candidateValue: string | null | undefined,
+	availableProviderValues: Set<string>,
+): string {
+	const normalizedCandidate = normalizeProviderValue(candidateValue);
+
+	if (!normalizedCandidate || normalizedCandidate === "auto") {
+		return "auto";
+	}
+
+	return availableProviderValues.has(normalizedCandidate)
+		? normalizedCandidate
+		: "auto";
 }
 
 /**
@@ -77,9 +99,15 @@ export function ProvidersSettings() {
 	const { data: settings, isLoading: isLoadingSettings } = useSettings();
 	const { data: availableProviders, isLoading: isLoadingProviders } =
 		useAvailableProviders();
+	const connectionState = useRecordingStore((s) => s.state);
 
 	// Wait for settings (source of truth) and provider list (for options)
 	const isLoadingProviderData = isLoadingSettings || isLoadingProviders;
+	const canSendProviderRequests =
+		connectionState === "idle" ||
+		connectionState === "startingRecording" ||
+		connectionState === "recording" ||
+		connectionState === "processing";
 	const sttTimeoutMutation = useUpdateSTTTimeout();
 
 	// Provider mutations handle pessimistic updates automatically:
@@ -103,13 +131,13 @@ export function ProvidersSettings() {
 	}, []);
 
 	const handleSTTProviderChange = (value: string | null) => {
-		if (!value || sttMutation.isPending) return;
+		if (!value || sttMutation.isPending || !canSendProviderRequests) return;
 		sttAbortControllerRef.current = new AbortController();
 		sttMutation.mutate({ value, signal: sttAbortControllerRef.current.signal });
 	};
 
 	const handleLLMProviderChange = (value: string | null) => {
-		if (!value || llmMutation.isPending) return;
+		if (!value || llmMutation.isPending || !canSendProviderRequests) return;
 		llmAbortControllerRef.current = new AbortController();
 		llmMutation.mutate({ value, signal: llmAbortControllerRef.current.signal });
 	};
@@ -139,27 +167,130 @@ export function ProvidersSettings() {
 		[availableProviders],
 	);
 
-	// Get display value for dropdown:
+	const availableSttProviderValues = useMemo(
+		() => new Set((availableProviders?.stt ?? []).map((provider) => provider.value)),
+		[availableProviders],
+	);
+	const availableLlmProviderValues = useMemo(
+		() => new Set((availableProviders?.llm ?? []).map((provider) => provider.value)),
+		[availableProviders],
+	);
+
+	// Get candidate value for dropdown:
 	// - During mutation: show what user selected (mutation.variables.value)
 	// - Otherwise: show confirmed value from store
-	const sttDisplayValue = sttMutation.isPending
+	const sttCandidateValue = sttMutation.isPending
 		? sttMutation.variables?.value
 		: (settings?.stt_provider ?? "auto");
-	const llmDisplayValue = llmMutation.isPending
+	const llmCandidateValue = llmMutation.isPending
 		? llmMutation.variables?.value
 		: (settings?.llm_provider ?? "auto");
+	const normalizedSavedSttProvider = normalizeProviderValue(settings?.stt_provider);
+	const normalizedSavedLlmProvider = normalizeProviderValue(settings?.llm_provider);
+
+	// Fallback to "auto" when persisted provider is missing, blank, or unavailable on server.
+	const sttDisplayValue = resolveProviderDisplayValue(
+		sttCandidateValue,
+		availableSttProviderValues,
+	);
+	const llmDisplayValue = resolveProviderDisplayValue(
+		llmCandidateValue,
+		availableLlmProviderValues,
+	);
 
 	// Determine if currently selected provider is local (only show badge for non-auto providers)
 	const selectedSttProvider = availableProviders?.stt.find(
-		(p) => p.value === settings?.stt_provider,
+		(p) => p.value === sttDisplayValue,
 	);
 	const selectedLlmProvider = availableProviders?.llm.find(
-		(p) => p.value === settings?.llm_provider,
+		(p) => p.value === llmDisplayValue,
 	);
-	const isSttProviderAuto = settings?.stt_provider === "auto";
-	const isLlmProviderAuto = settings?.llm_provider === "auto";
+	const isSttProviderAuto = sttDisplayValue === "auto";
+	const isLlmProviderAuto = llmDisplayValue === "auto";
 	const isSttProviderLocal = selectedSttProvider?.is_local ?? false;
 	const isLlmProviderLocal = selectedLlmProvider?.is_local ?? false;
+
+	// Remember last invalid value attempted to auto-heal, to avoid repeated retries.
+	const lastAutoHealAttemptRef = useRef<{ stt: string | null; llm: string | null }>(
+		{
+			stt: null,
+			llm: null,
+		},
+	);
+
+	useEffect(() => {
+		if (
+			!canSendProviderRequests ||
+			!settings ||
+			!availableProviders?.stt ||
+			sttMutation.isPending
+		) {
+			return;
+		}
+
+		const hasValidSavedProvider =
+			normalizedSavedSttProvider != null &&
+			(normalizedSavedSttProvider === "auto" ||
+				availableSttProviderValues.has(normalizedSavedSttProvider));
+		if (hasValidSavedProvider) {
+			lastAutoHealAttemptRef.current.stt = null;
+			return;
+		}
+
+		const attemptKey = normalizedSavedSttProvider ?? "__unset__";
+		if (lastAutoHealAttemptRef.current.stt === attemptKey) return;
+		lastAutoHealAttemptRef.current.stt = attemptKey;
+
+		sttAbortControllerRef.current = new AbortController();
+		sttMutation.mutate({
+			value: "auto",
+			signal: sttAbortControllerRef.current.signal,
+		});
+	}, [
+		canSendProviderRequests,
+		settings,
+		availableProviders,
+		sttMutation,
+		normalizedSavedSttProvider,
+		availableSttProviderValues,
+	]);
+
+	useEffect(() => {
+		if (
+			!canSendProviderRequests ||
+			!settings ||
+			!availableProviders?.llm ||
+			llmMutation.isPending
+		) {
+			return;
+		}
+
+		const hasValidSavedProvider =
+			normalizedSavedLlmProvider != null &&
+			(normalizedSavedLlmProvider === "auto" ||
+				availableLlmProviderValues.has(normalizedSavedLlmProvider));
+		if (hasValidSavedProvider) {
+			lastAutoHealAttemptRef.current.llm = null;
+			return;
+		}
+
+		const attemptKey = normalizedSavedLlmProvider ?? "__unset__";
+		if (lastAutoHealAttemptRef.current.llm === attemptKey) return;
+		lastAutoHealAttemptRef.current.llm = attemptKey;
+
+		llmAbortControllerRef.current = new AbortController();
+		llmMutation.mutate({
+			value: "auto",
+			signal: llmAbortControllerRef.current.signal,
+		});
+	}, [
+		canSendProviderRequests,
+		settings,
+		availableProviders,
+		llmMutation,
+		normalizedSavedLlmProvider,
+		availableLlmProviderValues,
+	]);
 
 	return (
 		<div className="settings-section animate-in animate-in-delay-1">

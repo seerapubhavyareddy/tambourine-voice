@@ -355,6 +355,25 @@ const providerChangeListenerActor = fromCallback<
 	};
 });
 
+function normalizeProviderId(value: string | null | undefined): string | null {
+	if (typeof value !== "string") return null;
+	const normalized = value.trim();
+	return normalized.length > 0 ? normalized : null;
+}
+
+function resolveProviderIdForSync(
+	providerId: string | null | undefined,
+	availableProviderValues: Set<string>,
+): string {
+	const normalizedProviderId = normalizeProviderId(providerId);
+	if (!normalizedProviderId || normalizedProviderId === "auto") {
+		return "auto";
+	}
+	return availableProviderValues.has(normalizedProviderId)
+		? normalizedProviderId
+		: "auto";
+}
+
 // =============================================================================
 // Initial Config Sync Actor
 // =============================================================================
@@ -366,20 +385,57 @@ const providerChangeListenerActor = fromCallback<
  * Without this, a server restart causes the server to fall back to its defaults
  * because the providerChangeListenerActor only captures *future* user changes.
  */
-const initialConfigSyncActor = fromPromise<void, { client: PipecatClient }>(
+const initialConfigSyncActor = fromPromise<
+	void,
+	{ client: PipecatClient; serverUrl: string }
+>(
 	async ({ input }) => {
-		const { client } = input;
+		const { client, serverUrl } = input;
 
 		const settings = await tauriAPI.getSettings();
+		let sttProviderIdForSync = settings.stt_provider;
+		let llmProviderIdForSync = settings.llm_provider;
+
+		try {
+			const availableProviders = await configAPI.getAvailableProviders(serverUrl);
+			const availableSttProviderValues = new Set(
+				availableProviders.stt.map((provider) => provider.value),
+			);
+			const availableLlmProviderValues = new Set(
+				availableProviders.llm.map((provider) => provider.value),
+			);
+
+			sttProviderIdForSync = resolveProviderIdForSync(
+				settings.stt_provider,
+				availableSttProviderValues,
+			);
+			llmProviderIdForSync = resolveProviderIdForSync(
+				settings.llm_provider,
+				availableLlmProviderValues,
+			);
+
+			// Persist auto-healed provider IDs so future reconnects don't retry stale values.
+			if (sttProviderIdForSync !== settings.stt_provider) {
+				await tauriAPI.updateSTTProvider(sttProviderIdForSync);
+			}
+			if (llmProviderIdForSync !== settings.llm_provider) {
+				await tauriAPI.updateLLMProvider(llmProviderIdForSync);
+			}
+		} catch (error) {
+			console.warn(
+				"[XState] Failed to validate providers during initial sync, using stored values:",
+				error,
+			);
+		}
 
 		const messages: ConfigMessage[] = [
 			{
 				type: "set-stt-provider",
-				data: { provider: toSTTProviderSelection(settings.stt_provider) },
+				data: { provider: toSTTProviderSelection(sttProviderIdForSync) },
 			},
 			{
 				type: "set-llm-provider",
-				data: { provider: toLLMProviderSelection(settings.llm_provider) },
+				data: { provider: toLLMProviderSelection(llmProviderIdForSync) },
 			},
 		];
 
@@ -626,6 +682,7 @@ export const connectionMachine = setup({
 					src: "initialConfigSync",
 					input: ({ context }) => ({
 						client: assertClient(context),
+						serverUrl: context.serverUrl,
 					}),
 					onDone: { target: "idle" },
 					onError: { target: "idle" },
